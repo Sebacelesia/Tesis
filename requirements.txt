@@ -1,0 +1,21 @@
+# --- App/UI ---
+streamlit>=1.37.0
+
+# --- PDF ---
+pymupdf>=1.24.8        # (import fitz)
+
+# --- Hugging Face / Modelos ---
+transformers>=4.44.0   # Qwen2.5 + chat templates
+accelerate>=0.33.0
+sentencepiece>=0.1.99  # requerido por T5/FLAN y varios tokenizers
+safetensors>=0.4.3
+
+# --- NumPy (evita conflictos con builds de Torch y libs antiguas) ---
+numpy<2
+
+# --- Cliente opcional para usar Qwen vía Ollama local (si lo usás) ---
+ollama>=0.3.0
+
+# --- Cuantización 4-bit (sólo Linux/NVIDIA). En macOS NO se instala. ---
+bitsandbytes>=0.43.1; platform_system == "Linux"
+#Tambiein PyTorch
