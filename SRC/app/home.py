@@ -3,8 +3,16 @@ import os, sys, io
 from datetime import date
 import streamlit as st
 
-from slm.client import load_flan_small, run_prompt_flan
-from slm.client import load_qwen_hf, run_prompt_qwen_hf  #
+import os, sys
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.abspath(os.path.join(CURRENT_DIR, "..", ".."))  # …/Tesis
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
+from SRC.slm.client import load_flan_small, run_prompt_flan
+from SRC.slm.client import load_qwen_hf, run_prompt_qwen_hf
+from SRC.services.widget import pdf_uploader
+ #
 
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
