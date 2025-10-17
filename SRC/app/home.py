@@ -1,190 +1,149 @@
-# app/app.py
-import os, sys, io
-from datetime import date
+# app.py (parámetros predeterminados)
+import io
+import json
+import requests
 import streamlit as st
+from typing import Optional, List
 
-import os, sys
-CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.abspath(os.path.join(CURRENT_DIR, "..", ".."))  # …/Tesis
-if PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, PROJECT_ROOT)
+# ====== PARÁMETROS PREDETERMINADOS ======
+OLLAMA_ENDPOINT = "http://localhost:11434"
+MODEL_NAME      = "qwen3:8b"
+TEMPERATURE     = 0.2
 
-from SRC.slm.client import load_flan_small, run_prompt_flan
-from SRC.slm.client import load_qwen_hf, run_prompt_qwen_hf
-from SRC.services.widget import pdf_uploader
- #
+USE_CHUNKING = True
+MAX_CHARS    = 8000
+OVERLAP      = 200
 
-
-CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-SRC_ROOT = os.path.abspath(os.path.join(CURRENT_DIR, ".."))
-if SRC_ROOT not in sys.path:
-    sys.path.insert(0, SRC_ROOT)
-
-from services.widget import pdf_uploader
-from services.text_processing import (
-    pdf_bytes_to_text,
-    strip_header_block,
-    split_evoluciones,
-    filter_evoluciones_by_date_range,
-    build_output_text,
-    chunk_text_by_chars,
-    text_to_pdf_bytes,
+DEFAULT_TEMPLATE = (
+    "Resumí el siguiente texto en 5 puntos claros y concisos:\n\n{text}"
 )
-from slm.client import load_flan_small, run_prompt_flan
+# =======================================
 
-# Prompt fijo en código (mejor con prefijo de tarea para T5)
-PROMPT_1 = (
-    "resumir en español: "  # prefijo tipo tarea para T5/FLAN
-    "por favor haz un resumen breve (1-2 oraciones) manteniendo el sentido clínico."
-)
+# ---- PDF → Texto (PyMuPDF) ----
+def pdf_bytes_to_text(pdf_bytes: bytes) -> str:
+    import fitz  # PyMuPDF
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    parts: List[str] = []
+    for page in doc:
+        parts.append(page.get_text())
+    return "\n".join(parts).strip()
 
-@st.cache_resource(show_spinner=False)
-def get_flan_pipe():
-    return load_flan_small()
+# ---- Llamada a Ollama (streaming) ----
+def ollama_generate(
+    model: str,
+    prompt: str,
+    endpoint: str = OLLAMA_ENDPOINT,
+    temperature: float = TEMPERATURE,
+    options: Optional[dict] = None,
+) -> str:
+    """
+    Llama al endpoint /api/generate de Ollama en modo stream y acumula la respuesta.
+    Si Ollama está con GPU y drivers OK, el modelo correrá en GPU.
+    """
+    payload = {
+        "model": model,
+        "prompt": prompt,
+        "stream": True,
+        "options": {
+            "temperature": temperature,
+            **(options or {}),
+        },
+    }
+    url = f"{endpoint.rstrip('/')}/api/generate"
+    resp = requests.post(url, json=payload, stream=True, timeout=600)
+    resp.raise_for_status()
 
-@st.cache_resource(show_spinner=False)
-def get_qwen_bundle(mode: str = "4bit"):
-    # Elegí "fp16" o "bf16" si tenés GPU con suficiente VRAM; "4bit" ahorra memoria
-    return load_qwen_hf(mode=mode)
+    text = []
+    for line in resp.iter_lines():
+        if not line:
+            continue
+        chunk = json.loads(line)
+        part = chunk.get("response", "")
+        if part:
+            text.append(part)
+    return "".join(text).strip()
 
-st.set_page_config(page_title="Anonimizador Historias Clínicas", layout="centered")
-st.title("📑 Anonimizador PDF → TXT → FLAN → PDF")
+# ---- Chunking simple por caracteres ----
+def chunk_text_by_chars(text: str, max_chars: int = MAX_CHARS, overlap: int = OVERLAP) -> List[str]:
+    if max_chars <= 0:
+        return [text]
+    chunks = []
+    i = 0
+    n = len(text)
+    while i < n:
+        j = min(i + max_chars, n)
+        chunks.append(text[i:j])
+        if j == n:
+            break
+        i = j - overlap if overlap > 0 else j
+    return chunks
 
-with st.sidebar:
-    st.subheader("⚙️ Parámetros del modelo")
-    max_chars = st.number_input("Tamaño del chunk (caracteres)", 200, 4000, 800, 50)
-    overlap   = st.number_input("Solapamiento", 0, 1000, 80, 10)
-    max_new   = st.number_input("max_new_tokens (salida)", 8, 1024, 256, 8)
+# ---- UI ----
+st.set_page_config(page_title="PDF → Texto → Ollama (Qwen 8B)", layout="centered")
+st.title("📄 PDF → 🧠 Qwen 8B (Ollama)")
 
-    engine = st.selectbox("Motor", ["FLAN-T5 small (HF)", "Qwen 7B/8B (HF)"], index=1)
-    qwen_mode = "4bit"
-    if engine == "Qwen 7B/8B (HF)":
-        qwen_mode = st.selectbox("Modo de Qwen", ["4bit", "fp16", "bf16", "auto", "cpu"], index=0)
+uploaded = st.file_uploader("Subí un PDF", type=["pdf"])
 
-    st.caption("PROMPT_1 (fijo en código):")
-    st.code(PROMPT_1, language="text")
+if uploaded is not None:
+    pdf_bytes = uploaded.read()
+    with st.spinner("Extrayendo texto del PDF..."):
+        try:
+            text = pdf_bytes_to_text(pdf_bytes)
+        except Exception as e:
+            st.error(f"Error al leer el PDF: {e}")
+            st.stop()
 
+    st.success("PDF leído correctamente.")
+    st.caption(f"Caracteres extraídos: {len(text)}")
+    st.text_area("Vista previa del texto", value=text[:2000] + ("..." if len(text) > 2000 else ""), height=200)
 
-modo = st.radio("Selecciona el modo de procesamiento:",
-                ["PDF completo", "Filtrar por rango de fechas"])
-
-uploaded_file = pdf_uploader("Sube un archivo PDF")
-
-# ------ Botón de prueba aislada del modelo ------
-with st.expander("🔬 Probar modelo sin PDF (sanity check)"):
-    if st.button("Probar FLAN (debería decir 'OK')"):
-        pipe = get_flan_pipe()
-        prueba = run_prompt_flan(
-            pipe,
-            prompt="Di 'OK' en mayúsculas.",
-            max_new_tokens=8
-        )
-        st.write("Salida de prueba:", repr(prueba))
-
-if uploaded_file is not None:
-    pdf_bytes = uploaded_file.read()
-
-    # 1) PDF → texto
-    texto = pdf_bytes_to_text(pdf_bytes)
-
-    # 2) Encabezado (opcional) + cuerpo sin encabezado
-    encabezado, texto_sin_encabezado = strip_header_block(texto)
-
-    # 3) Evoluciones y limpieza mínima
-    evoluciones = split_evoluciones(texto_sin_encabezado)
-
-    # 4) (Opcional) filtrar por fecha
-    if modo == "Filtrar por rango de fechas":
-        col1, col2 = st.columns(2)
-        with col1:
-            fecha_inicio = st.date_input("Fecha inicio", value=date(2000, 1, 1))
-        with col2:
-            fecha_fin = st.date_input("Fecha fin", value=date.today())
-        evoluciones = filter_evoluciones_by_date_range(evoluciones, fecha_inicio, fecha_fin)
-
-    # 5) Construir TXT final (PROMPT_2)
-    texto_final = build_output_text(encabezado, evoluciones)
-
-    # Diagnóstico de entrada
-    st.caption(f"Caracteres en TXT procesado (PROMPT_2): {len(texto_final)}")
-    st.caption(f"Primeros 200 chars del TXT: {repr(texto_final[:200])}")
-
-    # 6) Vista previa + descarga TXT
-    st.subheader("Vista previa del TXT procesado")
-    preview = texto_final[:2000] + ("..." if len(texto_final) > 2000 else "")
-    st.text_area("Texto", preview, height=300)
-
-    st.download_button(
-        label="📥 Descargar TXT procesado",
-        data=io.BytesIO(texto_final.encode("utf-8")),
-        file_name="procesado.txt",
-        mime="text/plain",
-    )
-
-    st.divider()
-    st.subheader("🤖 Ejecutar FLAN-T5 sobre (PROMPT_1 + TXT) y descargar PDF")
-
-    if st.button("Ejecutar modelo (FLAN-T5 small)"):
-        pipe = get_flan_pipe()
-
-        # 7) Chunkear
-        chunks = chunk_text_by_chars(texto_final, max_chars=int(max_chars), overlap=int(overlap))
-        st.caption(f"Chunks generados: {len(chunks)}")
-        if chunks:
-            st.caption(f"Len primer chunk: {len(chunks[0])}")
-
-        # 8) Ejecutar por chunk
-        outputs = []
-    if engine == "Qwen 7B/8B (HF)":
-        qwen_bundle = get_qwen_bundle(qwen_mode)
-
-    for i, ch in enumerate(chunks, start=1):
-        if engine == "FLAN-T5 small (HF)":
-            combined_prompt = f"{PROMPT_1}\n\nTexto {i}:\n{ch}"
-            out = run_prompt_flan(
-                get_flan_pipe(),
-                prompt=combined_prompt,
-                max_new_tokens=int(max_new),
-                num_beams=4,
-                do_sample=False,
-                temperature=0.0,
-            )
+    if st.button("🚀 Ejecutar en Ollama (parámetros predeterminados)"):
+        # Construir prompt final
+        template = DEFAULT_TEMPLATE
+        if "{text}" in template:
+            final_input = template.replace("{text}", text)
         else:
-            # En Qwen usamos plantillas de chat:
-            # - system = PROMPT_1 (reglas)
-            # - user   = el chunk
-            out = run_prompt_qwen_hf(
-                qwen_bundle,
-                system=PROMPT_1,
-                user=f"Texto {i}:\n{ch}",
-                max_new_tokens=int(max_new),
-                temperature=0.2,
-                do_sample=False,
-            )
+            final_input = f"{template.strip()}\n\n{text}"
 
-        outputs.append(out.strip())
+        # Chunking (si corresponde)
+        if USE_CHUNKING and len(final_input) > MAX_CHARS:
+            with st.spinner("Dividiendo en chunks y ejecutando..."):
+                chunks = chunk_text_by_chars(final_input, max_chars=MAX_CHARS, overlap=OVERLAP)
+                st.caption(f"Chunks generados: {len(chunks)}")
 
+                partials = []
+                for i, ch in enumerate(chunks, start=1):
+                    st.write(f"→ Procesando chunk {i}/{len(chunks)}…")
+                    try:
+                        out = ollama_generate(model=MODEL_NAME, prompt=ch, endpoint=OLLAMA_ENDPOINT, temperature=TEMPERATURE)
+                    except Exception as e:
+                        st.error(f"Error en chunk {i}: {e}")
+                        st.stop()
+                    partials.append(out.strip())
 
-        # 9) Unir salida
-        salida_modelo = "\n\n".join([o for o in outputs if o]).strip()
-
-        st.caption(f"Caracteres en salida del modelo: {len(salida_modelo)}")
-        if not salida_modelo:
-            st.warning("La salida del modelo está vacía. Probá bajar el tamaño del chunk, cambiar PROMPT_1 o aumentar max_new_tokens.")
+                result = "\n\n".join([p for p in partials if p]).strip()
         else:
-            st.text_area("Salida del modelo", salida_modelo, height=250)
+            with st.spinner("Consultando Ollama…"):
+                try:
+                    result = ollama_generate(model=MODEL_NAME, prompt=final_input, endpoint=OLLAMA_ENDPOINT, temperature=TEMPERATURE)
+                except Exception as e:
+                    st.error(f"Error llamando a Ollama: {e}")
+                    st.stop()
 
-            # 10) PDF de la salida
-            pdf_out_bytes = text_to_pdf_bytes(
-                salida_modelo,
-                paper="A4",
-                fontname="courier",
-                fontsize=11,
-                margin=36,
-            )
+        if not result:
+            st.warning("La salida está vacía. Probá ajustar el template o desactivar chunking.")
+        else:
+            st.subheader("🧾 Salida del modelo")
+            st.text_area("Texto generado", value=result, height=300)
+
             st.download_button(
-                label="📄 Descargar PDF con salida del modelo",
-                data=pdf_out_bytes,
-                file_name="salida_modelo.pdf",
-                mime="application/pdf",
+                "📥 Descargar salida (.txt)",
+                data=io.BytesIO(result.encode("utf-8")),
+                file_name="salida_ollama.txt",
+                mime="text/plain",
             )
+
+            st.success("¡Listo! El modelo respondió correctamente.")
+else:
+    st.info("Subí un PDF para comenzar.")
+
