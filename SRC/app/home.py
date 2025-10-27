@@ -1,18 +1,23 @@
-# app.py (parámetros predeterminados)
+# app.py — parámetros fijos en código
 import io
 import json
 import requests
 import streamlit as st
 from typing import Optional, List
+import textwrap
 
-# ====== PARÁMETROS PREDETERMINADOS ======
+# ====== PARÁMETROS FIJOS ======
 OLLAMA_ENDPOINT = "http://localhost:11434"
 MODEL_NAME      = "qwen3:8b"
 TEMPERATURE     = 0.2
 
-USE_CHUNKING = True
-MAX_CHARS    = 8000
-OVERLAP      = 200
+USE_CHUNKING          = True           # si el texto supera MAX_CHARS_PER_CHUNK, se parte
+MAX_CHARS_PER_CHUNK   = 10_000         # <- cambiá acá (p.ej., 10k)
+OVERLAP               = 200            # solapamiento entre chunks
+
+# Importante para evitar cortes por contexto/salida en Ollama:
+NUM_CTX               = 16384          # contexto (tokens) del modelo en Ollama
+NUM_PREDICT           = 4096           # tokens de salida máximos (subí si necesitás más)
 
 DEFAULT_TEMPLATE = (
     "Resumí el siguiente texto en 5 puntos claros y concisos:\n\n{text}"
@@ -37,17 +42,22 @@ def ollama_generate(
     options: Optional[dict] = None,
 ) -> str:
     """
-    Llama al endpoint /api/generate de Ollama en modo stream y acumula la respuesta.
-    Si Ollama está con GPU y drivers OK, el modelo correrá en GPU.
+    Llama a /api/generate de Ollama en modo stream y acumula la respuesta.
+    Fijamos num_ctx y num_predict para evitar truncamientos por defecto.
     """
+    base_opts = {
+        "temperature": temperature,
+        "num_ctx": NUM_CTX,
+        "num_predict": NUM_PREDICT,
+    }
+    if options:
+        base_opts.update(options)
+
     payload = {
         "model": model,
         "prompt": prompt,
         "stream": True,
-        "options": {
-            "temperature": temperature,
-            **(options or {}),
-        },
+        "options": base_opts,
     }
     url = f"{endpoint.rstrip('/')}/api/generate"
     resp = requests.post(url, json=payload, stream=True, timeout=600)
@@ -63,8 +73,8 @@ def ollama_generate(
             text.append(part)
     return "".join(text).strip()
 
-# ---- Chunking simple por caracteres ----
-def chunk_text_by_chars(text: str, max_chars: int = MAX_CHARS, overlap: int = OVERLAP) -> List[str]:
+# ---- Chunking por caracteres (solo el TEXTO, no el template) ----
+def chunk_text_by_chars(text: str, max_chars: int, overlap: int) -> List[str]:
     if max_chars <= 0:
         return [text]
     chunks = []
@@ -78,7 +88,66 @@ def chunk_text_by_chars(text: str, max_chars: int = MAX_CHARS, overlap: int = OV
         i = j - overlap if overlap > 0 else j
     return chunks
 
-# ---- UI ----
+# ---- Texto → PDF (PyMuPDF) ----
+def text_to_pdf_bytes(
+    text: str,
+    paper: str = "A4",
+    fontname: str = "Courier",   # monoespaciada para envolver simple
+    fontsize: int = 10,
+    margin: int = 36,            # 0.5" en puntos
+    line_spacing: float = 1.4,
+) -> bytes:
+    """
+    Genera un PDF simple en memoria con PyMuPDF, multi-página.
+    """
+    import fitz
+    doc = fitz.open()
+    # Tamaños: A4 o Letter
+    if paper.upper() == "A4":
+        width, height = 595, 842
+    else:
+        width, height = 612, 792
+
+    usable_w = width - 2 * margin
+    usable_h = height - 2 * margin
+
+    # Estimación de ancho por carácter para monoespaciada
+    char_w = fontsize * 0.6
+    max_chars_per_line = max(20, int(usable_w / char_w))
+
+    line_h = int(fontsize * line_spacing)
+    max_lines_per_page = max(10, int(usable_h / line_h))
+
+    # Envolver respetando saltos de párrafo
+    all_lines: List[str] = []
+    for para in text.splitlines():
+        if not para.strip():
+            all_lines.append("")  # línea en blanco
+            continue
+        wrapped = textwrap.wrap(para, width=max_chars_per_line, break_long_words=False)
+        if not wrapped:
+            all_lines.append("")
+        else:
+            all_lines.extend(wrapped)
+
+    # Escribir líneas en páginas
+    page = None
+    x = margin
+    y = margin
+    lines_on_page = 0
+
+    for line in all_lines:
+        if page is None or lines_on_page >= max_lines_per_page:
+            page = doc.new_page(width=width, height=height)
+            x, y = margin, margin
+            lines_on_page = 0
+        page.insert_text((x, y), line, fontsize=fontsize, fontname=fontname)
+        y += line_h
+        lines_on_page += 1
+
+    return doc.tobytes()
+
+# ---- UI mínima (sin parámetros) ----
 st.set_page_config(page_title="PDF → Texto → Ollama (Qwen 8B)", layout="centered")
 st.title("📄 PDF → 🧠 Qwen 8B (Ollama)")
 
@@ -94,56 +163,64 @@ if uploaded is not None:
             st.stop()
 
     st.success("PDF leído correctamente.")
-    st.caption(f"Caracteres extraídos: {len(text)}")
+    st.caption(f"Caracteres extraídos: {len(text)} (chunk: {MAX_CHARS_PER_CHUNK}, overlap: {OVERLAP})")
     st.text_area("Vista previa del texto", value=text[:2000] + ("..." if len(text) > 2000 else ""), height=200)
 
-    if st.button("🚀 Ejecutar en Ollama (parámetros predeterminados)"):
-        # Construir prompt final
-        template = DEFAULT_TEMPLATE
-        if "{text}" in template:
-            final_input = template.replace("{text}", text)
+    if st.button("🚀 Ejecutar en Ollama (parámetros fijos)"):
+        # CHUNKING sobre el TEXTO (inyectamos template por chunk)
+        if USE_CHUNKING and len(text) > MAX_CHARS_PER_CHUNK:
+            chunks = chunk_text_by_chars(text, max_chars=MAX_CHARS_PER_CHUNK, overlap=OVERLAP)
+            st.caption(f"Chunks generados: {len(chunks)}")
+
+            out_parts = []
+            for i, ch in enumerate(chunks, start=1):
+                st.write(f"→ Procesando chunk {i}/{len(chunks)}…")
+                prompt = DEFAULT_TEMPLATE.replace("{text}", ch) if "{text}" in DEFAULT_TEMPLATE else f"{DEFAULT_TEMPLATE.strip()}\n\n{ch}"
+                try:
+                    out = ollama_generate(model=MODEL_NAME, prompt=prompt, endpoint=OLLAMA_ENDPOINT, temperature=TEMPERATURE)
+                except Exception as e:
+                    st.error(f"Error en chunk {i}: {e}")
+                    st.stop()
+                out_parts.append(out.strip())
+            result = "\n\n".join([p for p in out_parts if p]).strip()
         else:
-            final_input = f"{template.strip()}\n\n{text}"
-
-        # Chunking (si corresponde)
-        if USE_CHUNKING and len(final_input) > MAX_CHARS:
-            with st.spinner("Dividiendo en chunks y ejecutando..."):
-                chunks = chunk_text_by_chars(final_input, max_chars=MAX_CHARS, overlap=OVERLAP)
-                st.caption(f"Chunks generados: {len(chunks)}")
-
-                partials = []
-                for i, ch in enumerate(chunks, start=1):
-                    st.write(f"→ Procesando chunk {i}/{len(chunks)}…")
-                    try:
-                        out = ollama_generate(model=MODEL_NAME, prompt=ch, endpoint=OLLAMA_ENDPOINT, temperature=TEMPERATURE)
-                    except Exception as e:
-                        st.error(f"Error en chunk {i}: {e}")
-                        st.stop()
-                    partials.append(out.strip())
-
-                result = "\n\n".join([p for p in partials if p]).strip()
-        else:
+            # TODO el texto en una sola llamada
+            prompt = DEFAULT_TEMPLATE.replace("{text}", text) if "{text}" in DEFAULT_TEMPLATE else f"{DEFAULT_TEMPLATE.strip()}\n\n{text}"
             with st.spinner("Consultando Ollama…"):
                 try:
-                    result = ollama_generate(model=MODEL_NAME, prompt=final_input, endpoint=OLLAMA_ENDPOINT, temperature=TEMPERATURE)
+                    result = ollama_generate(model=MODEL_NAME, prompt=prompt, endpoint=OLLAMA_ENDPOINT, temperature=TEMPERATURE)
                 except Exception as e:
                     st.error(f"Error llamando a Ollama: {e}")
                     st.stop()
 
         if not result:
-            st.warning("La salida está vacía. Probá ajustar el template o desactivar chunking.")
+            st.warning("La salida está vacía. Ajustá MAX_CHARS_PER_CHUNK o verificá NUM_CTX/NUM_PREDICT.")
         else:
             st.subheader("🧾 Salida del modelo")
             st.text_area("Texto generado", value=result, height=300)
 
+            # Descarga en PDF
+            with st.spinner("Generando PDF…"):
+                try:
+                    pdf_out_bytes = text_to_pdf_bytes(
+                        result,
+                        paper="A4",
+                        fontname="Courier",
+                        fontsize=10,
+                        margin=36,
+                        line_spacing=1.4,
+                    )
+                except Exception as e:
+                    st.error(f"No se pudo generar el PDF: {e}")
+                    st.stop()
+
             st.download_button(
-                "📥 Descargar salida (.txt)",
-                data=io.BytesIO(result.encode("utf-8")),
-                file_name="salida_ollama.txt",
-                mime="text/plain",
+                "📄 Descargar salida (PDF)",
+                data=io.BytesIO(pdf_out_bytes),
+                file_name="salida_ollama.pdf",
+                mime="application/pdf",
             )
 
-            st.success("¡Listo! El modelo respondió correctamente.")
+            st.success("¡Listo! El modelo respondió y el PDF fue generado ✅")
 else:
     st.info("Subí un PDF para comenzar.")
-
