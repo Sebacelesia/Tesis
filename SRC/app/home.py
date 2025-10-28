@@ -12,16 +12,35 @@ MODEL_NAME      = "qwen3:8b"
 TEMPERATURE     = 0.2
 
 USE_CHUNKING          = True           # si el texto supera MAX_CHARS_PER_CHUNK, se parte
-MAX_CHARS_PER_CHUNK   = 10_000         # <- cambiá acá (p.ej., 10k)
-OVERLAP               = 200            # solapamiento entre chunks
+MAX_CHARS_PER_CHUNK   = 10000         # <- cambiá acá (p.ej., 10k)
+OVERLAP               = 0            # solapamiento entre chunks
 
 # Importante para evitar cortes por contexto/salida en Ollama:
+
 NUM_CTX               = 16384          # contexto (tokens) del modelo en Ollama
-NUM_PREDICT           = 4096           # tokens de salida máximos (subí si necesitás más)
+NUM_PREDICT           = 25000           # tokens de salida máximos (subí si necesitás más)
 
 DEFAULT_TEMPLATE = (
-    "Resumí el siguiente texto en 5 puntos claros y concisos:\n\n{text}"
+    """Eres un asistente especializado en anonimizar historias clínicas en español.
+
+        INSTRUCCIONES OBLIGATORIAS
+        1) Sustituye SOLO datos personales por estos placeholders exactos:
+        - Nombres y apellidos de personas (pacientes, familiares, médicos) → [NOMBRE]
+        - Teléfonos (cualquier formato, nacional o internacional) → [TELEFONO]
+        - Cédulas de identidad / documentos → [CI]
+        - Direcciones postales/domicilios (calle/avenida + número, esquinas, apto, barrio) → [DIRECCIÓN]
+        2) Conserva TODO lo demás sin cambios: síntomas, diagnósticos, dosis, resultados, unidades, abreviaturas, signos de puntuación, mayúsculas/minúsculas.
+        3) Si ya hay placeholders ([NOMBRE], [TELEFONO], [CI], [DIRECCIÓN]), NO los modifiques.
+        4) Títulos y roles: conserva el título y reemplaza solo el nombre. Ej.: “Dr. [NOMBRE]”, “Lic. [NOMBRE]”.
+        5) Teléfonos: reemplaza secuencias de 7+ dígitos o con separadores (+598, -, espacios, paréntesis).
+        6) Direcciones: incluye referencias claras de domicilio (calle/esquina/número/apto/barrio).
+        7) No inventes datos, no agregues comentarios, no cambies el formato. Respeta saltos de línea y espacios originales.
+        8) Devuelve ÚNICAMENTE el texto anonimizado, sin explicaciones ni encabezados.
+
+        Texto a anonimizar:
+        {text}"""
 )
+
 # =======================================
 
 # ---- PDF → Texto (PyMuPDF) ----
