@@ -12,13 +12,13 @@ MODEL_NAME      = "qwen3:8b"
 TEMPERATURE     = 0.2
 
 USE_CHUNKING          = True           # si el texto supera MAX_CHARS_PER_CHUNK, se parte
-MAX_CHARS_PER_CHUNK   = 10000         # <- cambiá acá (p.ej., 10k)
-OVERLAP               = 0            # solapamiento entre chunks
+MAX_CHARS_PER_CHUNK   = 15000         # <- cambiá acá (p.ej., 10k)
+OVERLAP               = 10           # solapamiento entre chunks
 
 # Importante para evitar cortes por contexto/salida en Ollama:
 
 NUM_CTX               = 16384          # contexto (tokens) del modelo en Ollama
-NUM_PREDICT           = 25000           # tokens de salida máximos (subí si necesitás más)
+NUM_PREDICT           = 9000           # tokens de salida máximos (subí si necesitás más)
 
 DEFAULT_TEMPLATE = (
     """Eres un asistente especializado en anonimizar historias clínicas en español.
