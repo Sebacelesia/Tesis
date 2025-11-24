@@ -12,6 +12,8 @@ from typing import Optional, List
 import requests
 import streamlit as st
 
+from SRC.services.regex import extraer_datos
+
 # ====== PARÁMETROS FIJOS ======
 OLLAMA_ENDPOINT = "http://localhost:11434"
 MODEL_NAME      = "qwen3:8b"
@@ -50,141 +52,7 @@ DEFAULT_TEMPLATE = (
         {text}"""
 )
 
-# =======================================
-# ==== TOOL CASERA: perturbar valores marcados con [[CV_TAG: ...]] ±50% ====
 
-def _parse_number_preserving_sign(num_str: str) -> float:
-    """
-    Convierte un string numérico con posibles separadores (., ,) a float,
-    preservando el signo. No intenta ser perfecto, pero sirve para carga viral.
-    """
-    s = num_str.strip()
-    if not s:
-        return 0.0
-
-    sign = -1.0 if s.startswith("-") else 1.0
-    # quitar signo explícito
-    if s[0] in "+-":
-        s = s[1:].strip()
-
-    # Heurística simple para coma/punto
-    if "," in s and "." in s:
-        # asumo puntos como miles, coma como decimal
-        s_clean = s.replace(".", "")
-        s_clean = s_clean.replace(",", ".")
-    elif "," in s:
-        # solo coma -> decimal
-        s_clean = s.replace(",", ".")
-    elif s.count(".") > 1:
-        # muchos puntos -> todos como miles
-        s_clean = s.replace(".", "")
-    else:
-        s_clean = s
-
-    # quitar cualquier cosa que no sea dígito o punto
-    s_clean = re.sub(r"[^0-9.]", "", s_clean)
-    if not s_clean:
-        return 0.0
-
-    try:
-        val = float(s_clean)
-    except ValueError:
-        return 0.0
-
-    return sign * val
-
-
-def _format_number_like_original(original: str, value: float) -> str:
-    """
-    Intenta formatear 'value' con un estilo similar al de 'original':
-    - respeta signo (ya viene aplicado en value)
-    - respeta si usaba coma o punto como separador decimal
-    - respeta cantidad de decimales si los hay
-    No reintroduce separadores de miles para simplificar.
-    """
-    s = original.strip()
-    if not s:
-        # si original está vacío, devolvemos entero simple
-        return str(int(round(value)))
-
-    # detectar si había signo explícito
-    had_plus = s.startswith("+")
-    had_minus = s.startswith("-")
-
-    # parte sin signo
-    if s[0] in "+-":
-        s_body = s[1:].strip()
-    else:
-        s_body = s
-
-    # determinar separador decimal y decimales
-    if "," in s_body:
-        dec_sep = ","
-        parts = s_body.split(",")
-        decs = len(parts[1]) if len(parts) > 1 else 0
-    elif "." in s_body:
-        dec_sep = "."
-        parts = s_body.split(".")
-        decs = len(parts[1]) if len(parts) > 1 else 0
-    else:
-        dec_sep = None
-        decs = 0
-
-    val = float(value)
-    is_neg = val < 0
-    val_abs = abs(val)
-
-    if dec_sep is None or decs == 0:
-        # entero
-        formatted = str(int(round(val_abs)))
-    else:
-        # decimal con misma cantidad de decimales
-        formatted = f"{val_abs:.{decs}f}"
-        if dec_sep == ",":
-            formatted = formatted.replace(".", ",")
-
-    # volver a aplicar signo
-    if is_neg:
-        formatted = "-" + formatted
-    elif had_plus:
-        formatted = "+" + formatted
-
-    return formatted
-
-
-def perturb_cv_tags(text: str) -> str:
-    """
-    Busca marcas [[CV_TAG: valor]] en el texto y sustituye cada valor
-    por una versión perturbada ±50%, manteniendo el signo.
-    Cada aparición se perturba de forma independiente.
-    """
-
-    # Patrón para [[CV_TAG: 12345]] (con espacios opcionales)
-    pattern = re.compile(
-        r"\[\[\s*CV_TAG\s*:\s*([-+]?\d[\d\.,]*)\s*\]\]",
-        flags=re.IGNORECASE,
-    )
-
-    def _repl(match: re.Match) -> str:
-        num_str = match.group(1)
-
-        original_val = _parse_number_preserving_sign(num_str)
-
-        # si no pudimos parsear nada, dejamos el tag tal cual
-        if original_val == 0 and re.sub(r"[^0-9]", "", num_str) == "":
-            return match.group(0)
-
-        # factor aleatorio entre 0.5 y 1.5 (±50%), positivo
-        factor = random.uniform(0.5, 1.5)
-        new_val = original_val * factor  # mantiene signo
-
-        # formatear con estilo similar
-        new_num_str = _format_number_like_original(num_str, new_val)
-
-        # devolvemos solo el número, sin el tag
-        return new_num_str
-
-    return pattern.sub(_repl, text)
 
 # =======================================
 # ---- PDF → lista de páginas (PyMuPDF) ----
