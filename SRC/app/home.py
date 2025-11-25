@@ -12,7 +12,7 @@ from typing import Optional, List
 import requests
 import streamlit as st
 
-# ====== REGEX ======
+# ====== REGEX PARA EXTRAER DATOS (nombre, números, dirección) ======
 
 regex_numeros = r"""
     (?<!\d)
@@ -25,19 +25,14 @@ regex_numeros = r"""
 
         # ---- TELÉFONOS ----
         \+?\d[\d ]{6,}                      # internacionales o secuencias largas con +
-
-        # En fijos y celulares no separamos más
     )
     (?!\d)
 """
 
-# ------------------------------------
 # REGEX para DIRECCIÓN (solo si está declarada)
-# ------------------------------------
-
 regex_direccion_sin_tilde = r"""
     (?i)                       # case insensitive
-    direccion\s*:\s*           # Dirección: (con o sin espacio)
+    direccion\s*:\s*           # Direccion: (con o sin espacio)
    (.+)                        # capturar lo que sigue
 """
 regex_direccion_con_tilde = r"""
@@ -46,33 +41,45 @@ regex_direccion_con_tilde = r"""
    (.+)                        # capturar lo que sigue
 """
 
-def extraer_datos(texto):
+
+def extraer_datos(texto: str) -> str:
     """
-    Extrae el nombre desde una línea que comienza con 'Nombre:'.
-    Retorna una lista con cada palabra del nombre por separado.
-    Maneja formatos:
-      - 'Nombre: Juan Perez Silva'
-      - 'Nombre: Perez Silva, Juan'
+    Extrae:
+      - Nombre a partir de una línea que empieza con 'Nombre:'
+      - Números relevantes (teléfonos, cédulas, etc.)
+      - Dirección si aparece como 'Direccion:' o 'Dirección:'
+
+    Devuelve un string con el formato:
+    "Juan, Perez, Herrera, 12345678, +598 99010203, Av. Italia 3333"
+
+    Si no encuentra nada, devuelve "".
     """
+    if not texto:
+        return ""
+
     # 1) Números (teléfonos + cédulas + internacionales)
     numeros = re.findall(regex_numeros, texto, flags=re.VERBOSE)
     numeros = [n.strip() for n in numeros]
     numeros = list(dict.fromkeys(numeros))   # quitar duplicados
 
-    # 2) Dirección SOLO si aparece como "Direccion:"
-    
+    # 2) Dirección SOLO si aparece como "Dirección:" o "Direccion:"
     match_dir = re.search(regex_direccion_con_tilde, texto, flags=re.VERBOSE)
     direccion = match_dir.group(1).strip() if match_dir else None
 
-    if direccion == None:
+    if direccion is None:
         match_dir = re.search(regex_direccion_sin_tilde, texto, flags=re.VERBOSE)
         direccion = match_dir.group(1).strip() if match_dir else None
-    
 
-    # Buscar la línea que contiene "Nombre:"
+    # 3) Nombre
     match = re.search(r'Nombre:\s*(.+)', texto, flags=re.IGNORECASE)
     if not match:
-        return []  # No encontró el campo
+        # No hay nombre, armamos igual con lo que tengamos
+        elementos: List[str] = []
+        if numeros:
+            elementos.extend(numeros)
+        if direccion:
+            elementos.append(direccion)
+        return '"' + ", ".join(elementos) + '"' if elementos else ""
 
     nombre_raw = match.group(1).strip()
 
@@ -81,26 +88,31 @@ def extraer_datos(texto):
     nombre_raw = re.sub(r'\s+', ' ', nombre_raw)    # colapsar espacios múltiples
 
     # Caso especial: "Apellido(s) ..., Nombre"
-    # Si había una coma originalmente, la orden era AP → NOMBRE
     if ',' in match.group(1):
         partes = [p.strip() for p in match.group(1).replace('.', '').split(',')]
-        # partes[0] = apellidos
-        # partes[1] = nombres
-        nombre_raw = partes[1] + " " + partes[0]
+        if len(partes) >= 2:
+            apellidos = partes[0]
+            nombres = partes[1]
+            nombre_raw = nombres + " " + apellidos
 
-    # Separar por espacios
+    # Separar por espacios y formatear con comas
     palabras = [p for p in nombre_raw.split() if p]
-    nombre_formateado = ", ".join(palabras)
-            #    -> "Juan, Perez, Herrera"
+    nombre_formateado = ", ".join(palabras)  # "Juan, Perez, Herrera"
 
-    elementos = [
-        nombre_formateado,  # "Juan, Perez, Herrera"
-        *numeros,           # "12345678", "+598 99010203"
-        direccion           # "Av. Italia 3333"
-        ]
+    elementos: List[str] = []
+    if nombre_formateado:
+        elementos.append(nombre_formateado)
+    if numeros:
+        elementos.extend(numeros)
+    if direccion:
+        elementos.append(direccion)
+
+    if not elementos:
+        return ""
+
     resultado = '"' + ", ".join(elementos) + '"'
-
     return resultado
+
 
 # ====== PARÁMETROS FIJOS ======
 OLLAMA_ENDPOINT = "http://localhost:11434"
@@ -119,10 +131,6 @@ NUM_CTX               = 16384          # contexto (tokens) del modelo en Ollama
 NUM_PREDICT           = 9000           # tokens de salida máximos
 
 
-
-
-
-
 # =======================================
 # ==== REGLA DE CARGA VIRAL (regex + ±50%) ====
 # Formatos buscados:
@@ -134,6 +142,7 @@ CV_PATTERN = re.compile(
     r"\b(CV|Carga\s+Viral)\s*:\s*([-+]?\d[\d\.,]*)",
     flags=re.IGNORECASE,
 )
+
 
 def _parse_number_preserving_sign(num_str: str) -> float:
     """
@@ -258,6 +267,7 @@ def perturb_cv_in_text(text: str) -> str:
 
     return CV_PATTERN.sub(_repl, text)
 
+
 # =======================================
 # ---- PDF → lista de páginas (PyMuPDF) ----
 def pdf_bytes_to_pages(pdf_bytes: bytes) -> List[str]:
@@ -275,26 +285,28 @@ def pdf_bytes_to_pages(pdf_bytes: bytes) -> List[str]:
     doc.close()
     return pages
 
-def extraer_datos_desde_paginas(pages_text: List[str]):
-    """
-    Toma la lista de texto por página del PDF y utiliza la función extraer_datos
-    (definida en otro módulo) para devolver:
-      - palabras del nombre
-      - números (cédulas, teléfonos, etc.)
-      - dirección (si existe)
 
-    Retorna: (resultado)
+def extraer_datos_desde_paginas(pages_text: List[str]) -> str:
     """
-    # Unir todo el texto del PDF en un solo string
-    pages_text = pages_text[0,1]
-    full_text = "\n".join(pages_text).strip()
+    Usa las primeras 1–2 páginas para extraer nombre, números y dirección,
+    y devuelve el string resultado de extraer_datos().
+    """
+    if not pages_text:
+        return ""
 
-    # Llamar a la función del otro módulo
+    # Tomar primeras 2 páginas si existen, sino todas las que haya
+    subset = pages_text[:2]
+    full_text = "\n".join(subset).strip()
+
     resultado = extraer_datos(full_text)
-    
     return resultado
 
-def build_prompt(resultado, text):
+
+def build_prompt(resultado: str, text: str) -> str:
+    """
+    Construye el prompt para Ollama, incluyendo la lista de palabras/frases
+    que queremos censurar explícitamente.
+    """
     return f"""Eres un asistente especializado en anonimizar historias clínicas en español.
 
         INSTRUCCIONES OBLIGATORIAS
@@ -357,6 +369,7 @@ def ollama_generate(
             text_parts.append(part)
     return "".join(text_parts).strip()
 
+
 # ---- Chunking por caracteres (solo el TEXTO, no el template) ----
 def chunk_text_by_chars(text: str, max_chars: int, overlap: int) -> List[str]:
     if max_chars <= 0:
@@ -372,6 +385,7 @@ def chunk_text_by_chars(text: str, max_chars: int, overlap: int) -> List[str]:
         i = j - overlap if overlap > 0 else j
     return chunks
 
+
 # ---- Texto → PDF (PyMuPDF) ----
 def text_to_pdf_bytes(
     text: str,
@@ -383,6 +397,8 @@ def text_to_pdf_bytes(
 ) -> bytes:
     """
     Genera un PDF simple en memoria con PyMuPDF, multi-página.
+    Si el texto está vacío, genera una página en blanco para evitar
+    'cannot save with zero pages'.
     """
     import fitz
     doc = fitz.open()
@@ -391,6 +407,13 @@ def text_to_pdf_bytes(
         width, height = 595, 842
     else:
         width, height = 612, 792
+
+    # 👇 Si no hay texto, devolvemos un PDF con UNA página en blanco
+    if not text or not text.strip():
+        doc.new_page(width=width, height=height)
+        pdf_bytes = doc.tobytes()
+        doc.close()
+        return pdf_bytes
 
     usable_w = width - 2 * margin
     usable_h = height - 2 * margin
@@ -433,6 +456,7 @@ def text_to_pdf_bytes(
     doc.close()
     return pdf_bytes
 
+
 # ---- Unir varios PDFs en uno solo (PyMuPDF) ----
 def merge_pdfs(pdf_paths: List[str]) -> bytes:
     """
@@ -448,8 +472,9 @@ def merge_pdfs(pdf_paths: List[str]) -> bytes:
     out_doc.close()
     return merged_bytes
 
+
 # ---- Procesar UN bloque de texto (texto plano) → texto anonimizado ----
-def anonymize_block_text(block_text: str) -> str:
+def anonymize_block_text(block_text: str, resultado: str) -> str:
     """
     Recibe el texto de un bloque de páginas, lo trocea si hace falta,
     llama al modelo y devuelve el texto anonimizado de TODO el bloque.
@@ -467,11 +492,7 @@ def anonymize_block_text(block_text: str) -> str:
         )
         block_out_parts: List[str] = []
         for ch in chunks:
-            prompt = (
-                DEFAULT_TEMPLATE.replace("{text}", ch)
-                if "{text}" in DEFAULT_TEMPLATE
-                else f"{DEFAULT_TEMPLATE.strip()}\n\n{ch}"
-            )
+            prompt = build_prompt(resultado, ch)
             out = ollama_generate(
                 model=MODEL_NAME,
                 prompt=prompt,
@@ -482,11 +503,7 @@ def anonymize_block_text(block_text: str) -> str:
         block_result = "\n\n".join([p for p in block_out_parts if p]).strip()
     else:
         # Bloque suficientemente chico: va en una sola llamada
-        prompt = (
-            DEFAULT_TEMPLATE.replace("{text}", block_text)
-            if "{text}" in DEFAULT_TEMPLATE
-            else f"{DEFAULT_TEMPLATE.strip()}\n\n{block_text}"
-        )
+        prompt = build_prompt(resultado, block_text)
         block_result = ollama_generate(
             model=MODEL_NAME,
             prompt=prompt,
@@ -499,15 +516,17 @@ def anonymize_block_text(block_text: str) -> str:
 
     return block_result
 
+
 # ---- CORE: PDF (páginas en texto) → PDF final anonimizado usando carpeta temporal ----
 def anonymize_pdf_pages_to_merged_pdf(
     pages_text: List[str],
+    resultado: str,
     pages_per_block: int = PAGES_PER_BLOCK,
 ) -> bytes:
     """
     Recibe la lista de texto por página del PDF original y:
       1) arma bloques de páginas,
-      2) anonimiza bloque por bloque,
+      2) anonimiza bloque por bloque usando 'resultado' en el prompt,
       3) genera un PDF por cada bloque en una carpeta temporal,
       4) une todos los PDFs en uno solo,
       5) borra la carpeta temporal,
@@ -551,7 +570,7 @@ def anonymize_pdf_pages_to_merged_pdf(
             block_text = "\n".join(block_pages).strip()
 
             # Anonimizar texto del bloque (en memoria solo este bloque)
-            block_result_text = anonymize_block_text(block_text)
+            block_result_text = anonymize_block_text(block_text, resultado)
 
             # Convertir el resultado del bloque a PDF
             block_pdf_bytes = text_to_pdf_bytes(block_result_text)
@@ -587,6 +606,7 @@ def anonymize_pdf_pages_to_merged_pdf(
         except Exception:
             # Si falla la limpieza no rompemos el flujo principal
             pass
+
 
 # ---- UI Streamlit ----
 def main():
@@ -625,6 +645,7 @@ def main():
                 try:
                     final_pdf_bytes = anonymize_pdf_pages_to_merged_pdf(
                         pages_text,
+                        resultado=resultado,
                         pages_per_block=PAGES_PER_BLOCK,
                     )
                 except Exception as e:
