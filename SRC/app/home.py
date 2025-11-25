@@ -449,22 +449,29 @@ def merge_pdfs(pdf_paths: List[str]) -> bytes:
     return merged_bytes
 
 # ---- Procesar UN bloque de texto (texto plano) → texto anonimizado ----
-def anonymize_block_text(block_text: str, resultado: str) -> str:
-
+def anonymize_block_text(block_text: str) -> str:
+    """
+    Recibe el texto de un bloque de páginas, lo trocea si hace falta,
+    llama al modelo y devuelve el texto anonimizado de TODO el bloque.
+    Luego aplica la perturbación de carga viral sobre los patrones CV/Carga Viral.
+    """
     if not block_text.strip():
         return ""
 
-    # Chunking
+    # Si es muy grande, usamos chunking por caracteres
     if USE_CHUNKING and len(block_text) > MAX_CHARS_PER_CHUNK:
         chunks = chunk_text_by_chars(
             block_text,
             max_chars=MAX_CHARS_PER_CHUNK,
             overlap=OVERLAP,
         )
-        block_out_parts = []
-
+        block_out_parts: List[str] = []
         for ch in chunks:
-            prompt = build_prompt(resultado, ch)
+            prompt = (
+                DEFAULT_TEMPLATE.replace("{text}", ch)
+                if "{text}" in DEFAULT_TEMPLATE
+                else f"{DEFAULT_TEMPLATE.strip()}\n\n{ch}"
+            )
             out = ollama_generate(
                 model=MODEL_NAME,
                 prompt=prompt,
@@ -472,12 +479,14 @@ def anonymize_block_text(block_text: str, resultado: str) -> str:
                 temperature=TEMPERATURE,
             )
             block_out_parts.append(out.strip())
-
-        block_result = "\n\n".join(p for p in block_out_parts if p).strip()
-
+        block_result = "\n\n".join([p for p in block_out_parts if p]).strip()
     else:
-        # Sin chunking
-        prompt = build_prompt(resultado, block_text)
+        # Bloque suficientemente chico: va en una sola llamada
+        prompt = (
+            DEFAULT_TEMPLATE.replace("{text}", block_text)
+            if "{text}" in DEFAULT_TEMPLATE
+            else f"{DEFAULT_TEMPLATE.strip()}\n\n{block_text}"
+        )
         block_result = ollama_generate(
             model=MODEL_NAME,
             prompt=prompt,
@@ -485,10 +494,10 @@ def anonymize_block_text(block_text: str, resultado: str) -> str:
             temperature=TEMPERATURE,
         ).strip()
 
-    # Regla post-proceso
+    # 🔧 APLICAR REGLA DE CARGA VIRAL (regex + ±50%)
     block_result = perturb_cv_in_text(block_result)
-    return block_result
 
+    return block_result
 
 # ---- CORE: PDF (páginas en texto) → PDF final anonimizado usando carpeta temporal ----
 def anonymize_pdf_pages_to_merged_pdf(
