@@ -12,7 +12,95 @@ from typing import Optional, List
 import requests
 import streamlit as st
 
-from SRC.services.regex import extraer_datos
+# ====== REGEX ======
+
+regex_numeros = r"""
+    (?<!\d)
+    (?: 
+        # ---- CÉDULAS URUGUAY ----
+        \d{1,2}\.?\d{3}\.?\d{3}[-/]\d       # 1.234.567-8 / 1234567-8 / 1.234.567/8
+        |
+        \d{7,8}                             # 7 u 8 dígitos seguidos (cédula sin guion)
+        |
+
+        # ---- TELÉFONOS ----
+        \+?\d[\d ]{6,}                      # internacionales o secuencias largas con +
+
+        # En fijos y celulares no separamos más
+    )
+    (?!\d)
+"""
+
+# ------------------------------------
+# REGEX para DIRECCIÓN (solo si está declarada)
+# ------------------------------------
+
+regex_direccion_sin_tilde = r"""
+    (?i)                       # case insensitive
+    direccion\s*:\s*           # Dirección: (con o sin espacio)
+   (.+)                        # capturar lo que sigue
+"""
+regex_direccion_con_tilde = r"""
+    (?i)                       # case insensitive
+    dirección\s*:\s*           # Dirección: (con o sin espacio)
+   (.+)                        # capturar lo que sigue
+"""
+
+def extraer_datos(texto):
+    """
+    Extrae el nombre desde una línea que comienza con 'Nombre:'.
+    Retorna una lista con cada palabra del nombre por separado.
+    Maneja formatos:
+      - 'Nombre: Juan Perez Silva'
+      - 'Nombre: Perez Silva, Juan'
+    """
+    # 1) Números (teléfonos + cédulas + internacionales)
+    numeros = re.findall(regex_numeros, texto, flags=re.VERBOSE)
+    numeros = [n.strip() for n in numeros]
+    numeros = list(dict.fromkeys(numeros))   # quitar duplicados
+
+    # 2) Dirección SOLO si aparece como "Direccion:"
+    
+    match_dir = re.search(regex_direccion_con_tilde, texto, flags=re.VERBOSE)
+    direccion = match_dir.group(1).strip() if match_dir else None
+
+    if direccion == None:
+        match_dir = re.search(regex_direccion_sin_tilde, texto, flags=re.VERBOSE)
+        direccion = match_dir.group(1).strip() if match_dir else None
+    
+
+    # Buscar la línea que contiene "Nombre:"
+    match = re.search(r'Nombre:\s*(.+)', texto, flags=re.IGNORECASE)
+    if not match:
+        return []  # No encontró el campo
+
+    nombre_raw = match.group(1).strip()
+
+    # Normalizar espacios y quitar signos que estorban
+    nombre_raw = re.sub(r'[\.,]', ' ', nombre_raw)  # reemplazar comas y puntos por espacios
+    nombre_raw = re.sub(r'\s+', ' ', nombre_raw)    # colapsar espacios múltiples
+
+    # Caso especial: "Apellido(s) ..., Nombre"
+    # Si había una coma originalmente, la orden era AP → NOMBRE
+    if ',' in match.group(1):
+        partes = [p.strip() for p in match.group(1).replace('.', '').split(',')]
+        # partes[0] = apellidos
+        # partes[1] = nombres
+        nombre_raw = partes[1] + " " + partes[0]
+
+    # Separar por espacios
+    palabras = [p for p in nombre_raw.split() if p]
+    nombre_formateado = ", ".join(palabras)
+            #    -> "Juan, Perez, Herrera"
+
+    elementos = [
+        nombre_formateado,  # "Juan, Perez, Herrera"
+        *numeros,           # "12345678", "+598 99010203"
+        direccion           # "Av. Italia 3333"
+        ]
+    resultado = '"' + ", ".join(elementos) + '"'
+
+    return resultado
 
 # ====== PARÁMETROS FIJOS ======
 OLLAMA_ENDPOINT = "http://localhost:11434"
@@ -195,40 +283,39 @@ def extraer_datos_desde_paginas(pages_text: List[str]):
       - números (cédulas, teléfonos, etc.)
       - dirección (si existe)
 
-    Retorna: (palabras, numeros, direccion)
+    Retorna: (resultado)
     """
     # Unir todo el texto del PDF en un solo string
     pages_text = pages_text[0,1]
     full_text = "\n".join(pages_text).strip()
 
     # Llamar a la función del otro módulo
-    palabras, numeros, direccion = extraer_datos(full_text)
+    resultado = extraer_datos(full_text)
     
-    return palabras, numeros, direccion
+    return resultado
 
-palabras, numeros, direccion = extraer_datos_desde_paginas(pdf_bytes_to_pages())
-
-DEFAULT_TEMPLATE = (
-"""Eres un asistente especializado en anonimizar historias clínicas en español.
+def build_prompt(resultado, text):
+    return f"""Eres un asistente especializado en anonimizar historias clínicas en español.
 
         INSTRUCCIONES OBLIGATORIAS
-        1) Sustituye SOLO datos personales por estos placeholders exactos:
+        1) Siempre que aparezcan las siguientes palabras o frases en el documento debes cambiarlas por [CENSURADO]. Estas son: {resultado}
+        2) Sustituye SOLO datos personales por estos placeholders exactos:
         - Nombres y apellidos de personas de cualquier origen y en cualquier parte del documento (pacientes, familiares, médicos) → [CENSURADO]
         - Teléfonos (cualquier formato, nacional o internacional) → [CENSURADO]
         - Cédulas de identidad / documentos → [CENSURADO]
         - Direcciones postales/domicilios (calle/avenida + número, esquinas, apto, barrio) → [CENSURADO]
-        2) Conserva TODO lo demás sin cambios: síntomas, diagnósticos, dosis, resultados, unidades, abreviaturas, signos de puntuación, mayúsculas/minúsculas.
-        3) Si ya hay placeholders ([NOMBRE], [TELEFONO], [CI], [DIRECCIÓN], [CENSURADO]), NO los modifiques.
-        4) Títulos y roles: conserva el título y reemplaza solo el nombre. Ej.: “Dr. [CENSURADO]”, “Lic. [CENSURADO]”.
-        5) Teléfonos: reemplaza secuencias de 7+ dígitos o con separadores (+598, -, espacios, paréntesis).
-        6) Direcciones: incluye referencias claras de domicilio (calle/esquina/número/apto/barrio).
-        7) No inventes datos, no agregues comentarios, no cambies el formato. Respeta saltos de línea y espacios originales.
-        8) Devuelve ÚNICAMENTE el texto anonimizado, sin explicaciones ni encabezados.
-        9) NUNCA anonimices lo que aparece como Ciudad, Sexo o Edad. Es importante conservar esta información.
+        3) Conserva TODO lo demás sin cambios: síntomas, diagnósticos, dosis, resultados, unidades, abreviaturas, signos de puntuación, mayúsculas/minúsculas.
+        4) Si ya hay placeholders ([NOMBRE], [TELEFONO], [CI], [DIRECCIÓN], [CENSURADO]), NO los modifiques.
+        5) Títulos y roles: conserva el título y reemplaza solo el nombre. Ej.: “Dr. [CENSURADO]”, “Lic. [CENSURADO]”.
+        6) Teléfonos: reemplaza secuencias de 7+ dígitos o con separadores (+598, -, espacios, paréntesis).
+        7) Direcciones: incluye referencias claras de domicilio (calle/esquina/número/apto/barrio).
+        8) No inventes datos, no agregues comentarios, no cambies el formato. Respeta saltos de línea y espacios originales.
+        9) Devuelve ÚNICAMENTE el texto anonimizado, sin explicaciones ni encabezados.
+        10) NUNCA anonimices lo que aparece como Ciudad, Sexo o Edad. Es importante conservar esta información.
 
         Texto a anonimizar:
         {text}"""
-)
+
 
 # ---- Llamada a Ollama (streaming) ----
 def ollama_generate(
@@ -362,29 +449,22 @@ def merge_pdfs(pdf_paths: List[str]) -> bytes:
     return merged_bytes
 
 # ---- Procesar UN bloque de texto (texto plano) → texto anonimizado ----
-def anonymize_block_text(block_text: str) -> str:
-    """
-    Recibe el texto de un bloque de páginas, lo trocea si hace falta,
-    llama al modelo y devuelve el texto anonimizado de TODO el bloque.
-    Luego aplica la perturbación de carga viral sobre los patrones CV/Carga Viral.
-    """
+def anonymize_block_text(block_text: str, resultado: str) -> str:
+
     if not block_text.strip():
         return ""
 
-    # Si es muy grande, usamos chunking por caracteres
+    # Chunking
     if USE_CHUNKING and len(block_text) > MAX_CHARS_PER_CHUNK:
         chunks = chunk_text_by_chars(
             block_text,
             max_chars=MAX_CHARS_PER_CHUNK,
             overlap=OVERLAP,
         )
-        block_out_parts: List[str] = []
+        block_out_parts = []
+
         for ch in chunks:
-            prompt = (
-                DEFAULT_TEMPLATE.replace("{text}", ch)
-                if "{text}" in DEFAULT_TEMPLATE
-                else f"{DEFAULT_TEMPLATE.strip()}\n\n{ch}"
-            )
+            prompt = build_prompt(resultado, ch)
             out = ollama_generate(
                 model=MODEL_NAME,
                 prompt=prompt,
@@ -392,14 +472,12 @@ def anonymize_block_text(block_text: str) -> str:
                 temperature=TEMPERATURE,
             )
             block_out_parts.append(out.strip())
-        block_result = "\n\n".join([p for p in block_out_parts if p]).strip()
+
+        block_result = "\n\n".join(p for p in block_out_parts if p).strip()
+
     else:
-        # Bloque suficientemente chico: va en una sola llamada
-        prompt = (
-            DEFAULT_TEMPLATE.replace("{text}", block_text)
-            if "{text}" in DEFAULT_TEMPLATE
-            else f"{DEFAULT_TEMPLATE.strip()}\n\n{block_text}"
-        )
+        # Sin chunking
+        prompt = build_prompt(resultado, block_text)
         block_result = ollama_generate(
             model=MODEL_NAME,
             prompt=prompt,
@@ -407,10 +485,10 @@ def anonymize_block_text(block_text: str) -> str:
             temperature=TEMPERATURE,
         ).strip()
 
-    # 🔧 APLICAR REGLA DE CARGA VIRAL (regex + ±50%)
+    # Regla post-proceso
     block_result = perturb_cv_in_text(block_result)
-
     return block_result
+
 
 # ---- CORE: PDF (páginas en texto) → PDF final anonimizado usando carpeta temporal ----
 def anonymize_pdf_pages_to_merged_pdf(
@@ -513,6 +591,7 @@ def main():
         with st.spinner("Extrayendo texto del PDF..."):
             try:
                 pages_text = pdf_bytes_to_pages(pdf_bytes)  # lista de texto por página
+                resultado = extraer_datos_desde_paginas(pages_text)
             except Exception as e:
                 st.error(f"Error al leer el PDF: {e}")
                 st.stop()
