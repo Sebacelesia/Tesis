@@ -5,8 +5,8 @@ import json
 import shutil
 import tempfile
 import textwrap
-import re           # <-- NUEVO: para buscar tags
-import random       # <-- NUEVO: para el ±50%
+import re           # para regex (carga viral, etc.)
+import random       # para el ±50%
 from typing import Optional, List
 
 import requests
@@ -30,6 +30,184 @@ PAGES_PER_BLOCK       = 10             # <-- controlás "cada 10 páginas"
 NUM_CTX               = 16384          # contexto (tokens) del modelo en Ollama
 NUM_PREDICT           = 9000           # tokens de salida máximos
 
+
+
+
+
+
+# =======================================
+# ==== REGLA DE CARGA VIRAL (regex + ±50%) ====
+# Formatos buscados:
+#   - CV: valor
+#   - Carga Viral: valor
+#   - Carga viral: valor
+
+CV_PATTERN = re.compile(
+    r"\b(CV|Carga\s+Viral)\s*:\s*([-+]?\d[\d\.,]*)",
+    flags=re.IGNORECASE,
+)
+
+def _parse_number_preserving_sign(num_str: str) -> float:
+    """
+    Convierte un string numérico con posibles separadores (., ,) a float,
+    preservando el signo.
+    """
+    s = num_str.strip()
+    if not s:
+        return 0.0
+
+    sign = -1.0 if s.startswith("-") else 1.0
+
+    # quitar signo explícito si está
+    if s[0] in "+-":
+        s = s[1:].strip()
+
+    # Heurística simple para coma/punto
+    if "," in s and "." in s:
+        # asumo puntos como miles, coma como decimal
+        s_clean = s.replace(".", "")
+        s_clean = s_clean.replace(",", ".")
+    elif "," in s:
+        # solo coma -> decimal
+        s_clean = s.replace(",", ".")
+    elif s.count(".") > 1:
+        # muchos puntos -> todos como miles
+        s_clean = s.replace(".", "")
+    else:
+        s_clean = s
+
+    # dejar solo dígitos y punto decimal
+    s_clean = re.sub(r"[^0-9.]", "", s_clean)
+    if not s_clean:
+        return 0.0
+
+    try:
+        val = float(s_clean)
+    except ValueError:
+        return 0.0
+
+    return sign * val
+
+
+def _format_number_like_original(original: str, value: float) -> str:
+    """
+    Intenta formatear 'value' con un estilo similar al de 'original':
+    - respeta si usaba coma o punto como separador decimal
+    - respeta cantidad de decimales si los hay
+    - aplica signo según el valor final
+    No reintroduce separadores de miles para simplificar.
+    """
+    s = original.strip()
+    if not s:
+        return str(int(round(value)))
+
+    # ¿había decimales y con qué separador?
+    if "," in s:
+        dec_sep = ","
+        parts = s.split(",")
+        decs = len(parts[1]) if len(parts) > 1 else 0
+    elif "." in s:
+        dec_sep = "."
+        parts = s.split(".")
+        decs = len(parts[1]) if len(parts) > 1 else 0
+    else:
+        dec_sep = None
+        decs = 0
+
+    val = float(value)
+    is_neg = val < 0
+    val_abs = abs(val)
+
+    if dec_sep is None or decs == 0:
+        formatted = str(int(round(val_abs)))
+    else:
+        formatted = f"{val_abs:.{decs}f}"
+        if dec_sep == ",":
+            formatted = formatted.replace(".", ",")
+
+    if is_neg:
+        formatted = "-" + formatted
+
+    return formatted
+
+
+def perturb_cv_value(num_str: str) -> str:
+    """
+    Toma el string del valor numérico y lo modifica ±50%,
+    manteniendo el signo original.
+    """
+    original_val = _parse_number_preserving_sign(num_str)
+
+    # si no pudimos parsear nada, devolvemos tal cual
+    if original_val == 0 and re.sub(r"[^0-9]", "", num_str) == "":
+        return num_str
+
+    # factor aleatorio entre 0.5 y 1.5 (±50%)
+    factor = random.uniform(0.5, 1.5)
+    new_val = original_val * factor
+
+    # devolvemos string con formato similar al original
+    return _format_number_like_original(num_str, new_val)
+
+
+def perturb_cv_in_text(text: str) -> str:
+    """
+    Busca patrones de carga viral en el texto:
+      - CV: valor
+      - Carga Viral: valor
+      - Carga viral: valor
+    y reemplaza SOLO el valor por una versión perturbada ±50%.
+    """
+
+    def _repl(match: re.Match) -> str:
+        label = match.group(1)    # "CV" o "Carga Viral"
+        num_str = match.group(2)  # el valor como string
+
+        new_num_str = perturb_cv_value(num_str)
+
+        # reconstruimos el patrón conservando el label tal como vino
+        return f"{label}: {new_num_str}"
+
+    return CV_PATTERN.sub(_repl, text)
+
+# =======================================
+# ---- PDF → lista de páginas (PyMuPDF) ----
+def pdf_bytes_to_pages(pdf_bytes: bytes) -> List[str]:
+    """
+    Devuelve una lista con el texto de cada página del PDF.
+    pages_text[0] -> página 1
+    pages_text[1] -> página 2
+    ...
+    """
+    import fitz  # PyMuPDF
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    pages = []
+    for page in doc:
+        pages.append(page.get_text().strip())
+    doc.close()
+    return pages
+
+def extraer_datos_desde_paginas(pages_text: List[str]):
+    """
+    Toma la lista de texto por página del PDF y utiliza la función extraer_datos
+    (definida en otro módulo) para devolver:
+      - palabras del nombre
+      - números (cédulas, teléfonos, etc.)
+      - dirección (si existe)
+
+    Retorna: (palabras, numeros, direccion)
+    """
+    # Unir todo el texto del PDF en un solo string
+    pages_text = pages_text[0,1]
+    full_text = "\n".join(pages_text).strip()
+
+    # Llamar a la función del otro módulo
+    palabras, numeros, direccion = extraer_datos(full_text)
+    
+    return palabras, numeros, direccion
+
+palabras, numeros, direccion = extraer_datos_desde_paginas(pdf_bytes_to_pages())
+
 DEFAULT_TEMPLATE = (
 """Eres un asistente especializado en anonimizar historias clínicas en español.
 
@@ -51,25 +229,6 @@ DEFAULT_TEMPLATE = (
         Texto a anonimizar:
         {text}"""
 )
-
-
-
-# =======================================
-# ---- PDF → lista de páginas (PyMuPDF) ----
-def pdf_bytes_to_pages(pdf_bytes: bytes) -> List[str]:
-    """
-    Devuelve una lista con el texto de cada página del PDF.
-    pages_text[0] -> página 1
-    pages_text[1] -> página 2
-    ...
-    """
-    import fitz  # PyMuPDF
-    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    pages = []
-    for page in doc:
-        pages.append(page.get_text().strip())
-    doc.close()
-    return pages
 
 # ---- Llamada a Ollama (streaming) ----
 def ollama_generate(
@@ -207,7 +366,7 @@ def anonymize_block_text(block_text: str) -> str:
     """
     Recibe el texto de un bloque de páginas, lo trocea si hace falta,
     llama al modelo y devuelve el texto anonimizado de TODO el bloque.
-    Luego aplica la perturbación de carga viral sobre los tags [[CV_TAG: ...]].
+    Luego aplica la perturbación de carga viral sobre los patrones CV/Carga Viral.
     """
     if not block_text.strip():
         return ""
@@ -248,8 +407,8 @@ def anonymize_block_text(block_text: str) -> str:
             temperature=TEMPERATURE,
         ).strip()
 
-    # 🔧 APLICAR TOOL CASERA SOBRE TAGS DE CARGA VIRAL
-    block_result = perturb_cv_tags(block_result)
+    # 🔧 APLICAR REGLA DE CARGA VIRAL (regex + ±50%)
+    block_result = perturb_cv_in_text(block_result)
 
     return block_result
 
@@ -277,6 +436,9 @@ def anonymize_pdf_pages_to_merged_pdf(
     temp_dir = tempfile.mkdtemp(prefix="anon_blocks_")
     block_pdf_paths: List[str] = []
 
+    # 👀 Mostrar en la UI dónde se está creando la carpeta temporal
+    st.caption(f"Carpeta temporal para PDFs intermedios: {temp_dir}")
+
     try:
         # 1) Armar bloques de páginas
         blocks = []  # lista de tuplas: (start_page_idx, end_page_idx)
@@ -284,8 +446,20 @@ def anonymize_pdf_pages_to_merged_pdf(
             end = min(start + pages_per_block, num_pages)
             blocks.append((start, end))
 
+        total_blocks = len(blocks)
+
+        # UI de progreso en Streamlit
+        progress_bar = st.progress(0)
+        status_placeholder = st.empty()
+
         # 2) Procesar bloque por bloque
         for block_idx, (start_idx, end_idx) in enumerate(blocks, start=1):
+            # Mostrar en la UI qué bloque se está procesando
+            status_placeholder.text(
+                f"Anonimizando bloque {block_idx}/{total_blocks} "
+                f"(páginas {start_idx + 1}–{end_idx})..."
+            )
+
             block_pages = pages_text[start_idx:end_idx]
             block_text = "\n".join(block_pages).strip()
 
@@ -303,11 +477,17 @@ def anonymize_pdf_pages_to_merged_pdf(
 
             block_pdf_paths.append(block_path)
 
+            # Actualizar barra de progreso
+            progress_bar.progress(block_idx / total_blocks)
+
             # Liberar referencias grandes explícitamente
             del block_pages
             del block_text
             del block_result_text
             del block_pdf_bytes
+
+        # Mensaje final
+        status_placeholder.text("✅ Anonimización completada para todos los bloques.")
 
         # 3) Unir todos los PDFs intermedios en uno solo
         merged_pdf_bytes = merge_pdfs(sorted(block_pdf_paths))
