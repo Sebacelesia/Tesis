@@ -45,15 +45,6 @@ DEFAULT_TEMPLATE = (
         7) No inventes datos, no agregues comentarios, no cambies el formato. Respeta saltos de línea y espacios originales.
         8) Devuelve ÚNICAMENTE el texto anonimizado, sin explicaciones ni encabezados.
         9) NUNCA anonimices lo que aparece como Ciudad, Sexo o Edad. Es importante conservar esta información.
-        10) Cuando encuentres una mención de carga viral (por ejemplo "carga viral: 120000" o "CV: 120000" o "cv: 120000"),
-        NO modifiques el número tú mismo. En su lugar, reemplaza SOLO el número por una marca con este formato EXACTO:
-           - "cv: [[CV_TAG: 120000]]"
-           - "CV: [[CV_TAG: -34000]]"
-           - "Carga viral: [[CV_TAG: 45000]]"
-        Es muy importante que:
-           - Conserves el texto que rodea al número (por ejemplo "cv:", "Carga viral:", "copias/ml", etc.).
-           - Dentro de [[CV_TAG: ...]] coloques el valor numérico original tal como aparece (con signo si es negativo).
-        11) No uses la marca [[CV_TAG: ...]] para otros datos que no sean carga viral.
 
         Texto a anonimizar:
         {text}"""
@@ -390,7 +381,7 @@ def anonymize_block_text(block_text: str) -> str:
         ).strip()
 
     # 🔧 APLICAR TOOL CASERA SOBRE TAGS DE CARGA VIRAL
-    block_result = perturb_cv_tags(block_result)
+    #Esta parte iria para el prmopmpt de la carga viral: block_result = perturb_cv_tags(block_result)
 
     return block_result
 
