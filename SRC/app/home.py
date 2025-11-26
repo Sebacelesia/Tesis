@@ -5,9 +5,9 @@ import json
 import shutil
 import tempfile
 import textwrap
-import re           # <-- NUEVO: para buscar tags
-import random       # <-- NUEVO: para el ±50%
-from typing import Optional, List
+import re           # para buscar tags
+import random       # para el ±50%
+from typing import Optional, List, Callable
 
 import requests
 import streamlit as st
@@ -18,15 +18,15 @@ MODEL_NAME      = "qwen3:8b"
 TEMPERATURE     = 0.2
 
 USE_CHUNKING          = True            # si el texto supera MAX_CHARS_PER_CHUNK, se parte
-MAX_CHARS_PER_CHUNK   = 15000          # caracteres por chunk de texto
-OVERLAP               = 10             # solapamiento entre chunks (en caracteres)
+MAX_CHARS_PER_CHUNK   = 15000           # caracteres por chunk de texto
+OVERLAP               = 10              # solapamiento entre chunks (en caracteres)
 
 # Procesar de a N páginas de PDF por bloque lógico
-PAGES_PER_BLOCK       = 10             # <-- controlás "cada 10 páginas"
+PAGES_PER_BLOCK       = 10              # <-- controlás "cada 10 páginas"
 
 # Importante para evitar cortes por contexto/salida en Ollama:
-NUM_CTX               = 16384          # contexto (tokens) del modelo en Ollama
-NUM_PREDICT           = 9000           # tokens de salida máximos
+NUM_CTX               = 16384           # contexto (tokens del modelo) en Ollama
+NUM_PREDICT           = 9000            # tokens de salida máximos
 
 DEFAULT_TEMPLATE = (
 """Eres un asistente especializado en anonimizar historias clínicas en español.
@@ -381,7 +381,7 @@ def anonymize_block_text(block_text: str) -> str:
         ).strip()
 
     # 🔧 APLICAR TOOL CASERA SOBRE TAGS DE CARGA VIRAL
-    #Esta parte iria para el prmopmpt de la carga viral: block_result = perturb_cv_tags(block_result)
+    # block_result = perturb_cv_tags(block_result)
 
     return block_result
 
@@ -389,6 +389,8 @@ def anonymize_block_text(block_text: str) -> str:
 def anonymize_pdf_pages_to_merged_pdf(
     pages_text: List[str],
     pages_per_block: int = PAGES_PER_BLOCK,
+    progress_callback: Optional[Callable[[int, int], None]] = None,
+    tempdir_callback: Optional[Callable[[str], None]] = None,
 ) -> bytes:
     """
     Recibe la lista de texto por página del PDF original y:
@@ -407,6 +409,11 @@ def anonymize_pdf_pages_to_merged_pdf(
 
     # Carpeta temporal para PDFs intermedios
     temp_dir = tempfile.mkdtemp(prefix="anon_blocks_")
+
+    # avisar la ruta si hay callback
+    if tempdir_callback is not None:
+        tempdir_callback(temp_dir)
+
     block_pdf_paths: List[str] = []
 
     try:
@@ -416,8 +423,14 @@ def anonymize_pdf_pages_to_merged_pdf(
             end = min(start + pages_per_block, num_pages)
             blocks.append((start, end))
 
+        total_blocks = len(blocks)
+
         # 2) Procesar bloque por bloque
         for block_idx, (start_idx, end_idx) in enumerate(blocks, start=1):
+            # actualizar progreso si hay callback
+            if progress_callback is not None:
+                progress_callback(block_idx, total_blocks)
+
             block_pages = pages_text[start_idx:end_idx]
             block_text = "\n".join(block_pages).strip()
 
@@ -485,15 +498,37 @@ def main():
         )
 
         if st.button("🚀 Ejecutar anonimización completa"):
+            # Barra de progreso, texto de estado y ruta del temp dir
+            progress_bar = st.progress(0)
+            status_placeholder = st.empty()
+            tempdir_placeholder = st.empty()
+
+            def progress_cb(current_block: int, total_blocks: int) -> None:
+                pct = int(current_block / total_blocks * 100)
+                progress_bar.progress(pct)
+                status_placeholder.write(
+                    f"Procesando bloque {current_block} de {total_blocks}..."
+                )
+
+            def tempdir_cb(path: str) -> None:
+                # Se muestra una sola vez al inicio del procesamiento
+                tempdir_placeholder.caption(f"Carpeta temporal usada: `{path}`")
+
             with st.spinner("Procesando bloques y generando PDF anonimizado..."):
                 try:
                     final_pdf_bytes = anonymize_pdf_pages_to_merged_pdf(
                         pages_text,
                         pages_per_block=PAGES_PER_BLOCK,
+                        progress_callback=progress_cb,
+                        tempdir_callback=tempdir_cb,
                     )
                 except Exception as e:
                     st.error(f"Error durante la anonimización: {e}")
                     st.stop()
+
+            # marcar completado
+            progress_bar.progress(100)
+            status_placeholder.write("Procesamiento completado ✅")
 
             if not final_pdf_bytes:
                 st.warning(
