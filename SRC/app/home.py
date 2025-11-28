@@ -380,8 +380,11 @@ def parse_llm_list(text: str) -> List[str]:
 
 def postprocess_patient_data(raw_list: List[str]) -> List[str]:
     """
-    ["OLAF RASMUSEN JAKOBSEN", "2.156.983-0", "SALTO 3"]
-    -> ["OLAF", "RASMUSEN", "JAKOBSEN", "21569830", "SALTO 3"]
+    Ejemplos de entrada:
+      ["BENGELO RAKOTO MOHAMUD", "AA 6723098", "ABUBAKAR 431"]
+
+    Salida:
+      ["BENGELO", "RAKOTO", "MOHAMUD", "AA 6723098", "ABUBAKAR 431"]
     """
     if len(raw_list) < 3:
         raise ValueError(
@@ -389,13 +392,17 @@ def postprocess_patient_data(raw_list: List[str]) -> List[str]:
         )
 
     full_name = str(raw_list[0]).strip()
-    doc       = str(raw_list[1]).strip()
+    doc       = str(raw_list[1]).strip()   # <-- lo dejamos tal cual
     address   = str(raw_list[2]).strip()
 
+    # separar el nombre en palabras
     name_parts = [p for p in full_name.split() if p]
-    clean_doc = re.sub(r"\D", "", doc)
+
+    # ANTES: clean_doc = re.sub(r"\D", "", doc)  -> se perdían letras como "AA"
+    clean_doc = doc  # conservar letras, números y espacios exactamente como vienen
 
     return [*name_parts, clean_doc, address]
+
 
 
 def extract_patient_data_chain(pages_text: List[str]) -> Tuple[str, List[str], List[str]]:
