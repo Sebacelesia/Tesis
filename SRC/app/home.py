@@ -1,4 +1,4 @@
-# app.py — Pipeline completo: Prompt 1 + Prompt 2 + Prompt 3 + tool CV_TAG
+# app.py — Pipeline completo: Prompt 1 + Prompt 2 + Prompt 3 + Prompt 4 + tool CV_TAG
 import io
 import os
 import json
@@ -94,6 +94,27 @@ Instrucciones obligatorias:
 7) No agregues comentarios, explicaciones ni notas adicionales. Devuelve exclusivamente el texto original con las marcas aplicadas.
 
 Texto a procesar:
+{text}
+"""
+
+# ====== PROMPT 4: anonimización general final ======
+PROMPT4_TEMPLATE = """
+Eres un asistente especializado en anonimizar historias clínicas en español.
+
+INSTRUCCIONES OBLIGATORIAS
+1) Sustituye SOLO datos personales por estos placeholders exactos:
+   - Nombres y apellidos de personas de cualquier origen y en cualquier parte del documento (pacientes, familiares, médicos) → [CENSURADO]
+   - Teléfonos (reemplaza secuencias de 7+ dígitos o con separadores como +598, -, espacios, paréntesis; sean nacionales o internacionales) → [CENSURADO]
+   - Cédulas de identidad / documentos → [CENSURADO]
+   - Direcciones postales/domicilios (calle/avenida + número, esquinas, apartamento, barrio) → [CENSURADO]
+2) Conserva TODO lo demás sin cambios: síntomas, diagnósticos, dosis, resultados, unidades, abreviaturas, signos de puntuación, mayúsculas/minúsculas.
+3) Si ya hay placeholders ([CENSURADO]), NO los modifiques.
+4) Títulos y roles: conserva el título y reemplaza solo el nombre completo. Ej.: “Dr. [CENSURADO]”, “Lic. [CENSURADO]”.
+5) No inventes datos, no agregues comentarios, no cambies el formato. Respeta saltos de línea y espacios originales.
+6) NUNCA anonimices lo que aparece explícitamente como Ciudad, Sexo o Edad. Es importante conservar esta información tal como está.
+7) Devuelve ÚNICAMENTE el texto anonimizado, sin explicaciones ni encabezados adicionales.
+
+Texto a anonimizar:
 {text}
 """
 
@@ -453,30 +474,66 @@ def tag_cv_in_block_text(block_text: str) -> str:
         return out.strip()
 
 # =======================================
-# ---- Procesar texto de UN bloque con los 3 pasos ----
-def process_block_full_pipeline(block_text: str, patient_data_list: List[str]) -> str:
+# ---- Prompt 4: anonimización general en un bloque ----
+def general_anon_block_text(block_text: str) -> str:
     """
-    Para un bloque de texto:
-      1) Prompt 2: censurar datos del paciente.
-      2) Prompt 3: marcar carga viral con [[CV_TAG: ...]].
-      3) tool casera: perturb_cv_tags para modificar ±50% esos valores.
+    Aplica PROMPT 4 al texto del bloque para anonimizar datos personales restantes.
     """
     if not block_text.strip():
         return ""
 
-    # Paso 1: censura
+    if USE_CHUNKING and len(block_text) > MAX_CHARS_PER_CHUNK:
+        chunks = chunk_text_by_chars(block_text, MAX_CHARS_PER_CHUNK, OVERLAP)
+        out_parts: List[str] = []
+        for ch in chunks:
+            prompt = PROMPT4_TEMPLATE.replace("{text}", ch)
+            out = ollama_generate(
+                model=MODEL_NAME,
+                prompt=prompt,
+                endpoint=OLLAMA_ENDPOINT,
+                temperature=TEMPERATURE,
+            )
+            out_parts.append(out.strip())
+        return "\n\n".join([p for p in out_parts if p]).strip()
+    else:
+        prompt = PROMPT4_TEMPLATE.replace("{text}", block_text)
+        out = ollama_generate(
+            model=MODEL_NAME,
+            prompt=prompt,
+            endpoint=OLLAMA_ENDPOINT,
+            temperature=TEMPERATURE,
+        )
+        return out.strip()
+
+# =======================================
+# ---- Procesar texto de UN bloque con los 4 pasos ----
+def process_block_full_pipeline(block_text: str, patient_data_list: List[str]) -> str:
+    """
+    Para un bloque de texto:
+      1) Prompt 2: censurar datos del paciente (lista).
+      2) Prompt 3: marcar carga viral con [[CV_TAG: ...]].
+      3) tool casera: perturb_cv_tags para modificar ±50% esos valores.
+      4) Prompt 4: anonimización general final de datos personales restantes.
+    """
+    if not block_text.strip():
+        return ""
+
+    # Paso 1: censura con lista
     censored_text = censor_block_text(block_text, patient_data_list)
 
     # Paso 2: marcar carga viral
     tagged_text = tag_cv_in_block_text(censored_text)
 
     # Paso 3: tool casera sobre [[CV_TAG: ...]]
-    final_text = perturb_cv_tags(tagged_text)
+    perturbed_text = perturb_cv_tags(tagged_text)
+
+    # Paso 4: anonimización general final
+    final_text = general_anon_block_text(perturbed_text)
 
     return final_text
 
 # =======================================
-# ---- CORE: PDF → PDF final usando los 3 prompts por bloques ----
+# ---- CORE: PDF → PDF final usando los 4 prompts por bloques ----
 def full_pipeline_pdf_pages_to_merged_pdf(
     pages_text: List[str],
     patient_data_list: List[str],
@@ -486,9 +543,10 @@ def full_pipeline_pdf_pages_to_merged_pdf(
 ) -> bytes:
     """
     Aplica el pipeline completo por bloques:
-      - Prompt 2 (censura),
+      - Prompt 2 (censura con lista),
       - Prompt 3 (CV_TAG),
       - tool perturb_cv_tags,
+      - Prompt 4 (anonimización general),
       y genera un PDF final.
     """
     num_pages = len(pages_text)
@@ -575,10 +633,10 @@ def main():
             height=200,
         )
 
-        # ÚNICO BOTÓN: pipeline completo P1 + P2 + P3 + tool CV_TAG
-        if st.button("🚀 Ejecutar modelo (P1 + P2 + P3 + CV_TOOL)"):
+        # ÚNICO BOTÓN: pipeline completo P1 + P2 + P3 + tool CV_TAG + P4
+        if st.button("🚀 Ejecutar modelo (P1 + P2 + P3 + CV_TOOL + P4)"):
             # Paso 1: Prompt 1 (extraer datos)
-            with st.spinner("Paso 1/3: ejecutando Prompt 1 (extraer datos del encabezado)..."):
+            with st.spinner("Paso 1/4: ejecutando Prompt 1 (extraer datos del encabezado)..."):
                 try:
                     result_prompt_1, raw_list, patient_data_list = extract_patient_data_chain(
                         pages_text
@@ -594,7 +652,7 @@ def main():
             st.success("Prompt 1 completado. Datos detectados:")
             st.write("Lista procesada (nombres, doc limpio, dirección):", patient_data_list)
 
-            # Paso 2+3: Prompt 2 + Prompt 3 + tool por bloques
+            # Paso 2–4: Prompt 2 + Prompt 3 + tool + Prompt 4 por bloques
             progress_bar = st.progress(0)
             status_placeholder = st.empty()
             tempdir_placeholder = st.empty()
@@ -603,14 +661,14 @@ def main():
                 pct = int(current_block / total_blocks * 100)
                 progress_bar.progress(pct)
                 status_placeholder.write(
-                    f"Paso 2/3: procesando bloque {current_block} de {total_blocks}..."
+                    f"Paso 2/4–4/4: procesando bloque {current_block} de {total_blocks}..."
                 )
 
             def tempdir_cb(path: str) -> None:
                 tempdir_placeholder.caption(f"Carpeta temporal usada: `{path}`")
 
             with st.spinner(
-                "Paso 2/3 y 3/3: censurando texto, marcando carga viral y generando PDF..."
+                "Procesando bloques: censura específica, marcado de carga viral, perturbación y anonimización final..."
             ):
                 try:
                     final_pdf_bytes = full_pipeline_pdf_pages_to_merged_pdf(
