@@ -1,4 +1,4 @@
-# app.py — Pipeline completo: Prompt 1 + Prompt 2 + Prompt 3 + Prompt 4 + tool CV_TAG
+# app.py — Pipeline completo: Prompt 1 + Prompt 2 + Prompt 4 + Prompt 3 + tool CV_TAG
 import io
 import os
 import json
@@ -55,10 +55,12 @@ El objetivo general es que, a continuación, te daré una lista con datos y debe
 Dentro de la lista encontraras nombres, apellidos, un documento y una dirección de residencia.
 
 Criterios:
-1) Siempre que detectes un nombre o apellido de los que está en la lista cambialos por [CENSURADO]
+1) Siempre que detectes un nombre o apellido de los que está en la lista cambialos por [CENSURADO].
 2) Siempre que detectes el documento de la lista en el documento cambialo por [CENSURADO]. Este documento no tiene porque aparecer en el documento tal cual como está en la lista. Por dar algunos ejemplos, si en la lista está "12345678" y en el documento encuentras "1234567-8", "1.234.567-8" o "1234567 8" esto debes cambiar por [CENSURADO] también.
 3) Siempre que detectes la dirección de la lista en el documento cambialo por [CENSURADO]. Esta dirección de la lista no tiene porque ser idéntica a la que encuentres en el documento. Por dar algunos ejemplos, si en la lista está "Avenida Libertad 123" y en el documento aparece "Av. Libertad 123" esto debes cambiar por [CENSURADO] también. Si en la lista está "Mateo Cortéz 2395" y en el documento está "M. Cortéz 2395", "Cortéz 2395" o incluso "Cortéz numero 2395", esto debes cambiar por [CENSURADO] también.
-4) Por favor manten el formato (no utilices negritas ni aumentes el tamaño de la letra)
+4) Por favor manten el formato (no utilices negritas ni aumentes el tamaño de la letra).
+5) MUY IMPORTANTE: si en el texto NO encuentras ninguno de los datos de la lista, devuelve el texto ORIGINAL sin ningún cambio y sin añadir frases como "no hay nada que censurar" ni otros comentarios.
+6) Devuelve ÚNICAMENTE el documento censurado (o el original si no hay cambios), sin explicaciones ni notas adicionales.
 
 A continuación te muestro la lista:
 
@@ -91,7 +93,8 @@ Instrucciones obligatorias:
 4) Conserva todo el texto que rodea al número (por ejemplo "cv:", "Carga viral:", "copias/ml", etc.).
 5) Dentro de [[CV_TAG: ...]] debes colocar el valor numérico original tal como aparece en el texto, incluyendo el signo si fuera negativo.
 6) NO utilices la marca [[CV_TAG: ...]] para ningún otro dato que no sea carga viral.
-7) No agregues comentarios, explicaciones ni notas adicionales. Devuelve exclusivamente el texto original con las marcas aplicadas.
+7) Si en el texto NO hay ninguna mención de carga viral, devuelve el texto ORIGINAL sin ningún cambio.
+8) No agregues comentarios, explicaciones ni notas adicionales. Devuelve exclusivamente el texto (con las marcas aplicadas si las hay).
 
 Texto a procesar:
 {text}
@@ -110,13 +113,30 @@ INSTRUCCIONES OBLIGATORIAS
 2) Conserva TODO lo demás sin cambios: síntomas, diagnósticos, dosis, resultados, unidades, abreviaturas, signos de puntuación, mayúsculas/minúsculas.
 3) Si ya hay placeholders ([CENSURADO]), NO los modifiques.
 4) Títulos y roles: conserva el título y reemplaza solo el nombre completo. Ej.: “Dr. [CENSURADO]”, “Lic. [CENSURADO]”.
-5) No inventes datos, no agregues comentarios, no cambies el formato. Respeta saltos de línea y espacios originales.
-6) NUNCA anonimices lo que aparece explícitamente como Ciudad, Sexo o Edad. Es importante conservar esta información tal como está.
-7) Devuelve ÚNICAMENTE el texto anonimizado, sin explicaciones ni encabezados adicionales.
+5) NO anonimices ni modifiques valores de carga viral. (...)
+6) No inventes datos, no agregues comentarios, no cambies el formato. Respeta saltos de línea y espacios originales.
+7) NUNCA anonimices lo que aparece explícitamente como Ciudad, Sexo o Edad. (...)
+8) Si en el texto NO hay datos personales que deban anonimizarse (...)
+9) Devuelve ÚNICAMENTE el texto anonimizado (...)
+
+10) Caso especial: si aparece un encabezado como:
+    "Responsables del registro:"
+    o una variante muy similar, debes censurar TODOS los nombres que aparezcan en las líneas siguientes hasta que haya
+    una línea completamente vacía o comience un nuevo encabezado.
+    Ejemplo:
+      Responsables del registro:
+      Eliana Eulacio
+      Andrea Cancela
+
+    Debe quedar como:
+      Responsables del registro:
+      [CENSURADO]
+      [CENSURADO]
 
 Texto a anonimizar:
 {text}
 """
+
 
 # =======================================
 # ---- TOOL CASERA PARA CV_TAG ----
@@ -381,10 +401,14 @@ def parse_llm_list(text: str) -> List[str]:
 def postprocess_patient_data(raw_list: List[str]) -> List[str]:
     """
     Ejemplos de entrada:
-      ["BENGELO RAKOTO MOHAMUD", "AA 6723098", "ABUBAKAR 431"]
+      ["BENGELO RAKOTO MOHAMUD", "AA 6723.098-0", "ABUBAKAR 431"]
 
     Salida:
-      ["BENGELO", "RAKOTO", "MOHAMUD", "AA 6723098", "ABUBAKAR 431"]
+      ["BENGELO", "RAKOTO", "MOHAMUD", "AA67230980", "ABUBAKAR 431"]
+
+    - El nombre se separa en palabras.
+    - El documento se deja solo con letras y números (sin puntos, guiones ni espacios).
+    - La dirección se mantiene igual.
     """
     if len(raw_list) < 3:
         raise ValueError(
@@ -392,14 +416,15 @@ def postprocess_patient_data(raw_list: List[str]) -> List[str]:
         )
 
     full_name = str(raw_list[0]).strip()
-    doc       = str(raw_list[1]).strip()   # <-- lo dejamos tal cual
+    doc       = str(raw_list[1]).strip()
     address   = str(raw_list[2]).strip()
 
     # separar el nombre en palabras
     name_parts = [p for p in full_name.split() if p]
 
-    # ANTES: clean_doc = re.sub(r"\D", "", doc)  -> se perdían letras como "AA"
-    clean_doc = doc  # conservar letras, números y espacios exactamente como vienen
+    # 👉 dejar solo letras y números en el documento
+    #    elimina espacios, puntos, guiones y cualquier otro símbolo
+    clean_doc = re.sub(r"[^0-9A-Za-z]", "", doc)
 
     return [*name_parts, clean_doc, address]
 
@@ -518,9 +543,9 @@ def process_block_full_pipeline(block_text: str, patient_data_list: List[str]) -
     """
     Para un bloque de texto:
       1) Prompt 2: censurar datos del paciente (lista).
-      2) Prompt 3: marcar carga viral con [[CV_TAG: ...]].
-      3) tool casera: perturb_cv_tags para modificar ±50% esos valores.
-      4) Prompt 4: anonimización general final de datos personales restantes.
+      2) Prompt 4: anonimización general final de datos personales restantes.
+      3) Prompt 3: marcar carga viral con [[CV_TAG: ...]].
+      4) tool casera: perturb_cv_tags para modificar ±50% esos valores.
     """
     if not block_text.strip():
         return ""
@@ -528,19 +553,19 @@ def process_block_full_pipeline(block_text: str, patient_data_list: List[str]) -
     # Paso 1: censura con lista
     censored_text = censor_block_text(block_text, patient_data_list)
 
-    # Paso 2: marcar carga viral
-    tagged_text = tag_cv_in_block_text(censored_text)
+    # Paso 2: anonimización general (sin tocar CV)
+    anon_text = general_anon_block_text(censored_text)
 
-    # Paso 3: tool casera sobre [[CV_TAG: ...]]
-    perturbed_text = perturb_cv_tags(tagged_text)
+    # Paso 3: marcar carga viral sobre el texto ya anonimizado
+    tagged_text = tag_cv_in_block_text(anon_text)
 
-    # Paso 4: anonimización general final
-    final_text = general_anon_block_text(perturbed_text)
+    # Paso 4: tool casera sobre [[CV_TAG: ...]]
+    final_text = perturb_cv_tags(tagged_text)
 
     return final_text
 
 # =======================================
-# ---- CORE: PDF → PDF final usando los 4 prompts por bloques ----
+# ---- CORE: PDF → PDF final usando los prompts por bloques ----
 def full_pipeline_pdf_pages_to_merged_pdf(
     pages_text: List[str],
     patient_data_list: List[str],
@@ -551,9 +576,9 @@ def full_pipeline_pdf_pages_to_merged_pdf(
     """
     Aplica el pipeline completo por bloques:
       - Prompt 2 (censura con lista),
+      - Prompt 4 (anonimización general),
       - Prompt 3 (CV_TAG),
       - tool perturb_cv_tags,
-      - Prompt 4 (anonimización general),
       y genera un PDF final.
     """
     num_pages = len(pages_text)
@@ -640,8 +665,8 @@ def main():
             height=200,
         )
 
-        # ÚNICO BOTÓN: pipeline completo P1 + P2 + P3 + tool CV_TAG + P4
-        if st.button("🚀 Ejecutar modelo (P1 + P2 + P3 + CV_TOOL + P4)"):
+        # ÚNICO BOTÓN: pipeline completo P1 + P2 + P4 + P3 + CV_TOOL
+        if st.button("🚀 Ejecutar modelo (P1 + P2 + P4 + P3 + CV_TOOL)"):
             # Paso 1: Prompt 1 (extraer datos)
             with st.spinner("Paso 1/4: ejecutando Prompt 1 (extraer datos del encabezado)..."):
                 try:
@@ -657,9 +682,9 @@ def main():
             st.session_state["patient_data_list"] = patient_data_list
 
             st.success("Prompt 1 completado. Datos detectados:")
-            st.write("Lista procesada (nombres, doc limpio, dirección):", patient_data_list)
+            st.write("Lista procesada (nombres, doc, dirección):", patient_data_list)
 
-            # Paso 2–4: Prompt 2 + Prompt 3 + tool + Prompt 4 por bloques
+            # Paso 2–4: prompts por bloques
             progress_bar = st.progress(0)
             status_placeholder = st.empty()
             tempdir_placeholder = st.empty()
@@ -675,7 +700,7 @@ def main():
                 tempdir_placeholder.caption(f"Carpeta temporal usada: `{path}`")
 
             with st.spinner(
-                "Procesando bloques: censura específica, marcado de carga viral, perturbación y anonimización final..."
+                "Procesando bloques: censura específica, anonimización general y tratamiento de carga viral..."
             ):
                 try:
                     final_pdf_bytes = full_pipeline_pdf_pages_to_merged_pdf(
