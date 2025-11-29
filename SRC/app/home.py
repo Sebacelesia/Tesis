@@ -19,7 +19,7 @@ TEMPERATURE     = 0.2
 
 USE_CHUNKING          = True            # si el texto supera MAX_CHARS_PER_CHUNK, se parte
 MAX_CHARS_PER_CHUNK   = 15000           # caracteres por chunk de texto (del documento)
-OVERLAP               = 10              # solapamiento entre chunks (en caracteres)
+OVERLAP               = 0              # solapamiento entre chunks (en caracteres)
 
 # Procesar de a N páginas de PDF por bloque lógico
 PAGES_PER_BLOCK       = 10              # <-- controlás "cada 10 páginas"
