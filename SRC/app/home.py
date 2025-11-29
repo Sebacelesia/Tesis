@@ -1,4 +1,6 @@
-# app.py — Pipeline completo: Prompt 1 + Prompt 2 + Prompt 4 + Prompt 5 + Prompt 3 + tool CV_TAG
+# app.py — Pipeline completo en 2 etapas por bloque:
+# Etapa 1: Prompt 2 + Prompt 4
+# Etapa 2: Prompt 5 + Prompt 3 + tool CV_TAG
 import io
 import os
 import json
@@ -22,7 +24,7 @@ MAX_CHARS_PER_CHUNK   = 15000           # caracteres por chunk de texto (del doc
 OVERLAP               = 0               # solapamiento entre chunks (en caracteres)
 
 # Procesar de a N páginas de PDF por bloque lógico
-PAGES_PER_BLOCK       = 5              # <-- controlás "cada 10 páginas"
+PAGES_PER_BLOCK       = 5               # páginas por bloque
 
 # Importante para evitar cortes por contexto/salida en Ollama:
 NUM_CTX               = 16384           # contexto (tokens del modelo) en Ollama
@@ -96,7 +98,8 @@ Instrucciones obligatorias:
 4) Conserva todo el texto que rodea al número (por ejemplo "cv:", "Carga viral:", "copias/ml", etc.).
 5) Dentro de [[CV_TAG: ...]] debes colocar el valor numérico original tal como aparece en el texto, incluyendo el signo si fuera negativo.
 6) NO utilices la marca [[CV_TAG: ...]] para ningún otro dato que no sea carga viral.
-7) Devuelve ÚNICAMENTE el texto anonimizado (o el original si no hay cambios), sin explicaciones ni encabezados adicionales.
+7) Si en el texto NO hay ninguna mención de carga viral, devuelve el texto ORIGINAL sin ningún cambio.
+8) No agregues comentarios, explicaciones ni notas adicionales. Devuelve exclusivamente el texto (con las marcas aplicadas si las hay).
 
 Texto a procesar:
 {text}
@@ -118,7 +121,8 @@ INSTRUCCIONES OBLIGATORIAS
 5) NO anonimices ni modifiques valores de carga viral (no borres ni reemplaces números que sigan a 'CV', 'cv' o 'carga viral').
 6) No inventes datos, no agregues comentarios, no cambies el formato. Respeta saltos de línea y espacios originales.
 7) NUNCA anonimices lo que aparece explícitamente como Ciudad, Sexo o Edad.
-8) Devuelve ÚNICAMENTE el texto anonimizado (o el original si no hay cambios), sin explicaciones ni encabezados adicionales.
+8) Si en el texto NO hay datos personales que deban anonimizarse, devuelve el texto ORIGINAL sin cambios y sin añadir comentarios como "no hay nada que anonimizar".
+9) Devuelve ÚNICAMENTE el texto anonimizado (o el original si no hay cambios), sin explicaciones ni encabezados adicionales.
 
 Texto a anonimizar:
 {text}
@@ -139,7 +143,7 @@ Instrucciones obligatorias:
 3) No borres líneas: reemplaza solo su contenido por "[CENSURADO]" pero mantén la estructura y los saltos de línea originales.
 4) No modifiques ninguna otra parte del documento.
 5) Si el texto NO contiene la sección "Responsables del registro", devuelve el texto ORIGINAL sin ningún cambio.
-6) Devuelve ÚNICAMENTE el texto anonimizado (o el original si no hay cambios), sin explicaciones ni encabezados adicionales.
+6) No agregues comentarios, explicaciones ni encabezados adicionales. Devuelve exclusivamente el texto transformado (o el original si no hay cambios).
 
 Texto a procesar:
 {text}
@@ -565,48 +569,60 @@ def responsables_block_text(block_text: str) -> str:
         return out.strip()
 
 # =======================================
-# ---- Procesar texto de UN bloque con los pasos ----
-def process_block_full_pipeline(block_text: str, patient_data_list: List[str]) -> str:
+# ---- Etapa 1 y Etapa 2 por bloque ----
+def process_block_stage1(block_text: str, patient_data_list: List[str]) -> str:
     """
-    Para un bloque de texto:
-      1) Prompt 2: censurar datos del paciente (lista).
-      2) Prompt 4: anonimización general.
-      3) Prompt 5: tratar sección 'Responsables del registro'.
-      4) Prompt 3: marcar carga viral con [[CV_TAG: ...]].
-      5) Tool casera: perturb_cv_tags para modificar ±50% esos valores.
+    Etapa 1 por bloque:
+      - Prompt 2: censurar datos del paciente (lista).
+      - Prompt 4: anonimización general.
 
-    Además, si DEBUG_PIPELINE es True, imprime en consola la longitud del texto
-    en cada paso del pipeline para facilitar el diagnóstico de problemas
-    (por ejemplo, resúmenes inesperados del modelo).
+    El resultado se pasa a PDF y se guarda en disco para liberar memoria.
     """
     if not block_text.strip():
         return ""
 
     if DEBUG_PIPELINE:
-        print("\n===== Nuevo bloque =====")
+        print("\n===== Nuevo bloque — ETAPA 1 =====")
         print("LEN original bloque:", len(block_text))
 
-    # Paso 1: censura con lista
+    # Prompt 2
     censored_text = censor_block_text(block_text, patient_data_list)
     if DEBUG_PIPELINE:
         print("LEN después de Prompt 2 (censura específica):", len(censored_text))
 
-    # Paso 2: anonimización general (sin tocar CV explícitamente)
+    # Prompt 4
     anon_text = general_anon_block_text(censored_text)
     if DEBUG_PIPELINE:
         print("LEN después de Prompt 4 (anonimización general):", len(anon_text))
 
-    # Paso 3: tratar sección "Responsables del registro"
-    anon_text_resp = responsables_block_text(anon_text)
+    return anon_text
+
+
+def process_block_stage2(block_text: str) -> str:
+    """
+    Etapa 2 por bloque, trabajando sobre el texto ya anonimizado de la Etapa 1:
+      - Prompt 5: tratar sección 'Responsables del registro'.
+      - Prompt 3: marcar carga viral con [[CV_TAG: ...]].
+      - Tool casera: perturb_cv_tags para modificar ±50% esos valores.
+    """
+    if not block_text.strip():
+        return ""
+
+    if DEBUG_PIPELINE:
+        print("\n===== ETAPA 2 sobre bloque =====")
+        print("LEN entrada Etapa 2:", len(block_text))
+
+    # Prompt 5
+    anon_text_resp = responsables_block_text(block_text)
     if DEBUG_PIPELINE:
         print("LEN después de Prompt 5 (responsables):", len(anon_text_resp))
 
-    # Paso 4: marcar carga viral
+    # Prompt 3
     tagged_text = tag_cv_in_block_text(anon_text_resp)
     if DEBUG_PIPELINE:
         print("LEN después de Prompt 3 (tag CV_TAG):", len(tagged_text))
 
-    # Paso 5: tool casera sobre [[CV_TAG: ...]]
+    # Tool casera
     final_text = perturb_cv_tags(tagged_text)
     if DEBUG_PIPELINE:
         print("LEN final después de perturb_cv_tags:", len(final_text))
@@ -614,7 +630,7 @@ def process_block_full_pipeline(block_text: str, patient_data_list: List[str]) -
     return final_text
 
 # =======================================
-# ---- CORE: PDF → PDF final usando los prompts por bloques ----
+# ---- CORE: PDF → PDF final usando 2 etapas por bloque ----
 def full_pipeline_pdf_pages_to_merged_pdf(
     pages_text: List[str],
     patient_data_list: List[str],
@@ -622,6 +638,16 @@ def full_pipeline_pdf_pages_to_merged_pdf(
     progress_callback: Optional[Callable[[int, int], None]] = None,
     tempdir_callback: Optional[Callable[[str], None]] = None,
 ) -> bytes:
+    """
+    Para cada bloque de páginas:
+      1) Une las páginas en texto.
+      2) Etapa 1 (Prompt 2 + Prompt 4) → texto1.
+      3) Texto1 → PDF intermedio en carpeta temporal.
+      4) Lee ese PDF intermedio, lo pasa de nuevo a texto.
+      5) Etapa 2 (Prompt 5 + Prompt 3 + tool casera) → texto_final.
+      6) texto_final → PDF final de bloque.
+    Al final, se unen todos los PDFs finales.
+    """
     num_pages = len(pages_text)
     if num_pages == 0:
         return b""
@@ -631,7 +657,7 @@ def full_pipeline_pdf_pages_to_merged_pdf(
     if tempdir_callback is not None:
         tempdir_callback(temp_dir)
 
-    block_pdf_paths: List[str] = []
+    final_block_paths: List[str] = []
 
     try:
         blocks = []
@@ -642,28 +668,67 @@ def full_pipeline_pdf_pages_to_merged_pdf(
         total_blocks = len(blocks)
 
         for block_idx, (start_idx, end_idx) in enumerate(blocks, start=1):
-            if progress_callback is not None:
-                progress_callback(block_idx, total_blocks)
-
+            # ============================
+            # Tomar páginas del bloque
+            # ============================
             block_pages = pages_text[start_idx:end_idx]
             block_text = "\n".join(block_pages).strip()
 
-            block_result_text = process_block_full_pipeline(block_text, patient_data_list)
-            block_pdf_bytes = text_to_pdf_bytes(block_result_text)
+            # ============================
+            # ETAPA 1: Prompt 2 + Prompt 4
+            # ============================
+            text_stage1 = process_block_stage1(block_text, patient_data_list)
+            pdf_stage1_bytes = text_to_pdf_bytes(text_stage1)
 
-            block_filename = f"block_{block_idx:04d}.pdf"
-            block_path = os.path.join(temp_dir, block_filename)
-            with open(block_path, "wb") as f:
-                f.write(block_pdf_bytes)
+            stage1_path = os.path.join(temp_dir, f"block_{block_idx:04d}_stage1.pdf")
+            with open(stage1_path, "wb") as f:
+                f.write(pdf_stage1_bytes)
 
-            block_pdf_paths.append(block_path)
-
+            # Liberar memoria de Etapa 1
             del block_pages
             del block_text
-            del block_result_text
-            del block_pdf_bytes
+            del text_stage1
+            del pdf_stage1_bytes
 
-        merged_pdf_bytes = merge_pdfs(sorted(block_pdf_paths))
+            # ============================
+            # ETAPA 2: leer PDF intermedio y terminar pipeline
+            # ============================
+            with open(stage1_path, "rb") as f:
+                stage1_pdf_bytes = f.read()
+
+            # Pasar PDF intermedio a texto
+            stage1_pages_text = pdf_bytes_to_pages(stage1_pdf_bytes)
+            stage1_full_text = "\n".join(stage1_pages_text).strip()
+
+            # Etapa 2: Prompt 5 + Prompt 3 + tool casera
+            text_final = process_block_stage2(stage1_full_text)
+            pdf_final_bytes = text_to_pdf_bytes(text_final)
+
+            final_path = os.path.join(temp_dir, f"block_{block_idx:04d}_final.pdf")
+            with open(final_path, "wb") as f:
+                f.write(pdf_final_bytes)
+
+            final_block_paths.append(final_path)
+
+            # Liberar memoria de Etapa 2
+            del stage1_pdf_bytes
+            del stage1_pages_text
+            del stage1_full_text
+            del text_final
+            del pdf_final_bytes
+
+            # Borrar PDF intermedio de Etapa 1 del disco
+            try:
+                os.remove(stage1_path)
+            except Exception:
+                pass
+
+            # Progreso
+            if progress_callback is not None:
+                progress_callback(block_idx, total_blocks)
+
+        # Unir todos los PDFs finales
+        merged_pdf_bytes = merge_pdfs(sorted(final_block_paths))
         return merged_pdf_bytes
 
     finally:
@@ -704,7 +769,7 @@ def main():
             height=200,
         )
 
-        if st.button("🚀 Ejecutar modelo (P1 + P2 + P4 + P5 + P3 + CV_TOOL)"):
+        if st.button("🚀 Ejecutar modelo (P1 + (P2+P4) + (P5+P3+CV_TOOL))"):
             # Paso 1: Prompt 1
             with st.spinner("Paso 1: ejecutando Prompt 1 (extraer datos del encabezado)..."):
                 try:
@@ -722,7 +787,7 @@ def main():
             st.success("Prompt 1 completado. Datos detectados:")
             st.write("Lista procesada (nombres, doc, dirección):", patient_data_list)
 
-            # Paso 2+: prompts por bloques
+            # Paso 2+: pipeline por bloques en 2 etapas
             progress_bar = st.progress(0)
             status_placeholder = st.empty()
             tempdir_placeholder = st.empty()
@@ -731,14 +796,14 @@ def main():
                 pct = int(current_block / total_blocks * 100)
                 progress_bar.progress(pct)
                 status_placeholder.write(
-                    f"Procesando bloque {current_block} de {total_blocks}..."
+                    f"Procesando bloque {current_block} de {total_blocks} (2 etapas por bloque)..."
                 )
 
             def tempdir_cb(path: str) -> None:
                 tempdir_placeholder.caption(f"Carpeta temporal usada: `{path}`")
 
             with st.spinner(
-                "Procesando bloques: censura específica, anonimización general, responsables y carga viral..."
+                "Procesando bloques en 2 etapas: (P2+P4) y luego (P5+P3+CV_TOOL)..."
             ):
                 try:
                     final_pdf_bytes = full_pipeline_pdf_pages_to_merged_pdf(
@@ -767,7 +832,7 @@ def main():
                     file_name="salida_ollama_anonimizada.pdf",
                     mime="application/pdf",
                 )
-                st.success("¡Listo! Se ejecutó el pipeline completo y se generó el PDF anonimizado ✅")
+                st.success("¡Listo! Se ejecutó el pipeline completo en 2 etapas por bloque y se generó el PDF anonimizado ✅")
 
     else:
         st.info("Subí un PDF para comenzar.")
