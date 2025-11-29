@@ -17,14 +17,14 @@ import streamlit as st
 # ====== PARÁMETROS FIJOS ======
 OLLAMA_ENDPOINT = "http://localhost:11434"
 MODEL_NAME      = "qwen3:8b"
-TEMPERATURE     = 0.2
+TEMPERATURE     = 0.0
 
 USE_CHUNKING          = True            # si el texto supera MAX_CHARS_PER_CHUNK, se parte
 MAX_CHARS_PER_CHUNK   = 15000           # caracteres por chunk de texto (del documento)
 OVERLAP               = 0               # solapamiento entre chunks (en caracteres)
 
 # Procesar de a N páginas de PDF por bloque lógico
-PAGES_PER_BLOCK       = 5               # páginas por bloque
+PAGES_PER_BLOCK       = 2               # páginas por bloque
 
 # Importante para evitar cortes por contexto/salida en Ollama:
 NUM_CTX               = 16384           # contexto (tokens del modelo) en Ollama
@@ -90,16 +90,12 @@ Instrucciones obligatorias:
    - "cv: 120000"
    - "CV 120000"
    u otras variantes similares.
-2) NO modifiques tú mismo el valor de la carga viral.
-3) Reemplaza ÚNICAMENTE el número por una marca con este formato EXACTO:
+2) Reemplaza ÚNICAMENTE el número por una marca con este formato EXACTO:
    - "cv: [[CV_TAG: 120000]]"
    - "CV: [[CV_TAG: -34000]]"
    - "Carga viral: [[CV_TAG: 45000]]"
-4) Conserva todo el texto que rodea al número (por ejemplo "cv:", "Carga viral:", "copias/ml", etc.).
-5) Dentro de [[CV_TAG: ...]] debes colocar el valor numérico original tal como aparece en el texto, incluyendo el signo si fuera negativo.
-6) NO utilices la marca [[CV_TAG: ...]] para ningún otro dato que no sea carga viral.
-7) Si en el texto NO hay ninguna mención de carga viral, devuelve el texto ORIGINAL sin ningún cambio.
-8) No agregues comentarios, explicaciones ni notas adicionales. Devuelve exclusivamente el texto (con las marcas aplicadas si las hay).
+   Dentro de [[CV_TAG: ...]] debes colocar el valor numérico original tal como aparece en el texto, incluyendo el signo si fuera negativo.
+3) No agregues comentarios, explicaciones ni notas adicionales. Devuelve exclusivamente el texto (con las marcas aplicadas si las hay).
 
 Texto a procesar:
 {text}
@@ -110,19 +106,14 @@ PROMPT4_TEMPLATE = """
 Eres un asistente especializado en anonimizar historias clínicas en español.
 
 INSTRUCCIONES OBLIGATORIAS
-1) Sustituye SOLO datos personales por estos placeholders exactos:
+1) Sustituye SOLO los siguientes datos personales por estos placeholders exactos:
    - Nombres y apellidos de personas de cualquier origen y en cualquier parte del documento (pacientes, familiares, médicos) → [CENSURADO]
    - Teléfonos (reemplaza secuencias de 7+ dígitos o con separadores como +598, -, espacios, paréntesis; sean nacionales o internacionales) → [CENSURADO]
    - Cédulas de identidad / documentos → [CENSURADO]
    - Direcciones postales/domicilios (calle/avenida + número, esquinas, apartamento, barrio) → [CENSURADO]
 2) Conserva TODO lo demás sin cambios: síntomas, diagnósticos, dosis, resultados, unidades, abreviaturas, signos de puntuación, mayúsculas/minúsculas.
-3) Si ya hay placeholders ([CENSURADO]), NO los modifiques.
-4) Títulos y roles: conserva el título y reemplaza solo el nombre completo. Ej.: “Dr. [CENSURADO]”, “Lic. [CENSURADO]”.
-5) NO anonimices ni modifiques valores de carga viral (no borres ni reemplaces números que sigan a 'CV', 'cv' o 'carga viral').
-6) No inventes datos, no agregues comentarios, no cambies el formato. Respeta saltos de línea y espacios originales.
-7) NUNCA anonimices lo que aparece explícitamente como Ciudad, Sexo o Edad.
-8) Si en el texto NO hay datos personales que deban anonimizarse, devuelve el texto ORIGINAL sin cambios y sin añadir comentarios como "no hay nada que anonimizar".
-9) Devuelve ÚNICAMENTE el texto anonimizado (o el original si no hay cambios), sin explicaciones ni encabezados adicionales.
+3) NO anonimices ni modifiques valores de carga viral (no borres ni reemplaces números que sigan a 'CV', 'cv' o 'carga viral').
+4) Devuelve ÚNICAMENTE el texto anonimizado (o el original si no hay cambios), sin explicaciones ni encabezados adicionales.
 
 Texto a anonimizar:
 {text}
@@ -141,9 +132,7 @@ Instrucciones obligatorias:
    - una nueva sección claramente separada (por ejemplo una línea que termina en ":" o que está en mayúsculas y parece un encabezado),
    reemplaza TODO el contenido de la línea por exactamente "[CENSURADO]".
 3) No borres líneas: reemplaza solo su contenido por "[CENSURADO]" pero mantén la estructura y los saltos de línea originales.
-4) No modifiques ninguna otra parte del documento.
-5) Si el texto NO contiene la sección "Responsables del registro", devuelve el texto ORIGINAL sin ningún cambio.
-6) No agregues comentarios, explicaciones ni encabezados adicionales. Devuelve exclusivamente el texto transformado (o el original si no hay cambios).
+4) No agregues comentarios, explicaciones ni encabezados adicionales. Devuelve exclusivamente el texto transformado (o el original si no hay cambios).
 
 Texto a procesar:
 {text}
