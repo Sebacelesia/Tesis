@@ -22,7 +22,7 @@ MAX_CHARS_PER_CHUNK   = 15000           # caracteres por chunk de texto (del doc
 OVERLAP               = 0               # solapamiento entre chunks (en caracteres)
 
 # Procesar de a N páginas de PDF por bloque lógico
-PAGES_PER_BLOCK       = 10              # <-- controlás "cada 10 páginas"
+PAGES_PER_BLOCK       = 5              # <-- controlás "cada 10 páginas"
 
 # Importante para evitar cortes por contexto/salida en Ollama:
 NUM_CTX               = 16384           # contexto (tokens del modelo) en Ollama
@@ -96,8 +96,7 @@ Instrucciones obligatorias:
 4) Conserva todo el texto que rodea al número (por ejemplo "cv:", "Carga viral:", "copias/ml", etc.).
 5) Dentro de [[CV_TAG: ...]] debes colocar el valor numérico original tal como aparece en el texto, incluyendo el signo si fuera negativo.
 6) NO utilices la marca [[CV_TAG: ...]] para ningún otro dato que no sea carga viral.
-7) Si en el texto NO hay ninguna mención de carga viral, devuelve el texto ORIGINAL sin ningún cambio.
-8) No agregues comentarios, explicaciones ni notas adicionales. Devuelve exclusivamente el texto (con las marcas aplicadas si las hay).
+7) Devuelve ÚNICAMENTE el texto anonimizado (o el original si no hay cambios), sin explicaciones ni encabezados adicionales.
 
 Texto a procesar:
 {text}
@@ -140,7 +139,7 @@ Instrucciones obligatorias:
 3) No borres líneas: reemplaza solo su contenido por "[CENSURADO]" pero mantén la estructura y los saltos de línea originales.
 4) No modifiques ninguna otra parte del documento.
 5) Si el texto NO contiene la sección "Responsables del registro", devuelve el texto ORIGINAL sin ningún cambio.
-6) No agregues comentarios, explicaciones ni encabezados adicionales. Devuelve exclusivamente el texto transformado (o el original si no hay cambios).
+6) Devuelve ÚNICAMENTE el texto anonimizado (o el original si no hay cambios), sin explicaciones ni encabezados adicionales.
 
 Texto a procesar:
 {text}
