@@ -19,7 +19,7 @@ TEMPERATURE     = 0.2
 
 USE_CHUNKING          = True            # si el texto supera MAX_CHARS_PER_CHUNK, se parte
 MAX_CHARS_PER_CHUNK   = 15000           # caracteres por chunk de texto (del documento)
-OVERLAP               = 0              # solapamiento entre chunks (en caracteres)
+OVERLAP               = 0               # solapamiento entre chunks (en caracteres)
 
 # Procesar de a N páginas de PDF por bloque lógico
 PAGES_PER_BLOCK       = 10              # <-- controlás "cada 10 páginas"
@@ -27,6 +27,9 @@ PAGES_PER_BLOCK       = 10              # <-- controlás "cada 10 páginas"
 # Importante para evitar cortes por contexto/salida en Ollama:
 NUM_CTX               = 16384           # contexto (tokens del modelo) en Ollama
 NUM_PREDICT           = 9000            # tokens de salida máximos
+
+# Flag de debug para ver longitudes en consola
+DEBUG_PIPELINE        = True
 
 # ====== PROMPT 1: extraer datos del encabezado ======
 PROMPT1_TEMPLATE = (
@@ -116,8 +119,7 @@ INSTRUCCIONES OBLIGATORIAS
 5) NO anonimices ni modifiques valores de carga viral (no borres ni reemplaces números que sigan a 'CV', 'cv' o 'carga viral').
 6) No inventes datos, no agregues comentarios, no cambies el formato. Respeta saltos de línea y espacios originales.
 7) NUNCA anonimices lo que aparece explícitamente como Ciudad, Sexo o Edad.
-8) Si en el texto NO hay datos personales que deban anonimizarse, devuelve el texto ORIGINAL sin cambios y sin añadir comentarios como "no hay nada que anonimizar".
-9) Devuelve ÚNICAMENTE el texto anonimizado (o el original si no hay cambios), sin explicaciones ni encabezados adicionales.
+8) Devuelve ÚNICAMENTE el texto anonimizado (o el original si no hay cambios), sin explicaciones ni encabezados adicionales.
 
 Texto a anonimizar:
 {text}
@@ -573,24 +575,42 @@ def process_block_full_pipeline(block_text: str, patient_data_list: List[str]) -
       3) Prompt 5: tratar sección 'Responsables del registro'.
       4) Prompt 3: marcar carga viral con [[CV_TAG: ...]].
       5) Tool casera: perturb_cv_tags para modificar ±50% esos valores.
+
+    Además, si DEBUG_PIPELINE es True, imprime en consola la longitud del texto
+    en cada paso del pipeline para facilitar el diagnóstico de problemas
+    (por ejemplo, resúmenes inesperados del modelo).
     """
     if not block_text.strip():
         return ""
 
+    if DEBUG_PIPELINE:
+        print("\n===== Nuevo bloque =====")
+        print("LEN original bloque:", len(block_text))
+
     # Paso 1: censura con lista
     censored_text = censor_block_text(block_text, patient_data_list)
+    if DEBUG_PIPELINE:
+        print("LEN después de Prompt 2 (censura específica):", len(censored_text))
 
     # Paso 2: anonimización general (sin tocar CV explícitamente)
     anon_text = general_anon_block_text(censored_text)
+    if DEBUG_PIPELINE:
+        print("LEN después de Prompt 4 (anonimización general):", len(anon_text))
 
     # Paso 3: tratar sección "Responsables del registro"
     anon_text_resp = responsables_block_text(anon_text)
+    if DEBUG_PIPELINE:
+        print("LEN después de Prompt 5 (responsables):", len(anon_text_resp))
 
     # Paso 4: marcar carga viral
     tagged_text = tag_cv_in_block_text(anon_text_resp)
+    if DEBUG_PIPELINE:
+        print("LEN después de Prompt 3 (tag CV_TAG):", len(tagged_text))
 
     # Paso 5: tool casera sobre [[CV_TAG: ...]]
     final_text = perturb_cv_tags(tagged_text)
+    if DEBUG_PIPELINE:
+        print("LEN final después de perturb_cv_tags:", len(final_text))
 
     return final_text
 
