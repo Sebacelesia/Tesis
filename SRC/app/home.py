@@ -1,6 +1,5 @@
-# app.py — Pipeline completo en 2 etapas por bloque:
-# Etapa 1: Prompt 2 + Prompt 4
-# Etapa 2: Prompt 5 + Prompt 3 + tool CV_TAG
+# app.py — Pipeline completo en 1 etapa por bloque:
+# Etapa única: Prompt 2 + Prompt 5 + Prompt 3 (redondear carga viral al millar más cercano)
 import io
 import os
 import json
@@ -8,7 +7,6 @@ import shutil
 import tempfile
 import textwrap
 import re
-import random
 from typing import Optional, List, Callable, Tuple
 
 import requests
@@ -24,7 +22,7 @@ MAX_CHARS_PER_CHUNK   = 15000           # caracteres por chunk de texto (del doc
 OVERLAP               = 0               # solapamiento entre chunks (en caracteres)
 
 # Procesar de a N páginas de PDF por bloque lógico
-PAGES_PER_BLOCK       = 2               # páginas por bloque
+PAGES_PER_BLOCK       = 3               # páginas por bloque
 
 # Importante para evitar cortes por contexto/salida en Ollama:
 NUM_CTX               = 16384           # contexto (tokens del modelo) en Ollama
@@ -32,6 +30,9 @@ NUM_PREDICT           = 9000            # tokens de salida máximos
 
 # Flag de debug para ver longitudes en consola
 DEBUG_PIPELINE        = True
+
+# Marcador de nueva sección por bloque
+SECTION_MARKER        = "---Sección Intermedia---"
 
 # ====== PROMPT 1: extraer datos del encabezado ======
 PROMPT1_TEMPLATE = (
@@ -75,11 +76,11 @@ A continuación te comparto el documento:
 {text}
 """
 
-# ====== PROMPT 3: marcar carga viral con [[CV_TAG: ...]] ======
+# ====== PROMPT 3: marcar carga viral y redondear al millar más cercano ======
 PROMPT3_TEMPLATE = """
 Eres un especialista en análisis de textos clínicos en español.
 
-Tu tarea es identificar TODAS las menciones de carga viral en el texto y marcarlas con una etiqueta especial.
+Tu tarea es identificar TODAS las menciones de carga viral en el texto y reemplazar el número por un intervalo como se muestra a continuacion.
 
 Instrucciones obligatorias:
 1) Considera como mención de carga viral expresiones en las que aparezcan términos como
@@ -90,32 +91,22 @@ Instrucciones obligatorias:
    - "cv: 120000"
    - "CV 120000"
    u otras variantes similares.
-2) Reemplaza ÚNICAMENTE el número por una marca con este formato EXACTO:
-   - "cv: [[CV_TAG: 120000]]"
-   - "CV: [[CV_TAG: -34000]]"
-   - "Carga viral: [[CV_TAG: 45000]]"
-   Dentro de [[CV_TAG: ...]] debes colocar el valor numérico original tal como aparece en el texto, incluyendo el signo si fuera negativo.
-3) No agregues comentarios, explicaciones ni notas adicionales. Devuelve exclusivamente el texto (con las marcas aplicadas si las hay).
+
+2) Para cada número que represente una carga viral sustituye este por el redondeo a las decenas de millar mas cercano.
+
+   Ejemplos de como cambiar el numero:
+
+   - 123456 → 120000
+   - 1201 → 0
+   - 14999 → 10000
+   - 10000 → 10000
+   - -234567 → -230000
+
+3) NO modifiques ningún otro número que no esté claramente asociado a carga viral.
+4) Si en el texto NO hay ninguna mención de carga viral, devuelve el texto ORIGINAL sin ningún cambio.
+5) No agregues comentarios, explicaciones ni notas adicionales. Devuelve exclusivamente el texto procesado.
 
 Texto a procesar:
-{text}
-"""
-
-# ====== PROMPT 4: anonimización general final ======
-PROMPT4_TEMPLATE = """
-Eres un asistente especializado en anonimizar historias clínicas en español.
-
-INSTRUCCIONES OBLIGATORIAS
-1) Sustituye SOLO los siguientes datos personales por estos placeholders exactos:
-   - Nombres y apellidos de personas de cualquier origen y en cualquier parte del documento (pacientes, familiares, médicos) → [CENSURADO]
-   - Teléfonos (reemplaza secuencias de 7+ dígitos o con separadores como +598, -, espacios, paréntesis; sean nacionales o internacionales) → [CENSURADO]
-   - Cédulas de identidad / documentos → [CENSURADO]
-   - Direcciones postales/domicilios (calle/avenida + número, esquinas, apartamento, barrio) → [CENSURADO]
-2) Conserva TODO lo demás sin cambios: síntomas, diagnósticos, dosis, resultados, unidades, abreviaturas, signos de puntuación, mayúsculas/minúsculas.
-3) NO anonimices ni modifiques valores de carga viral (no borres ni reemplaces números que sigan a 'CV', 'cv' o 'carga viral').
-4) Devuelve ÚNICAMENTE el texto anonimizado (o el original si no hay cambios), sin explicaciones ni encabezados adicionales.
-
-Texto a anonimizar:
 {text}
 """
 
@@ -123,119 +114,30 @@ Texto a anonimizar:
 PROMPT5_TEMPLATE = """
 Eres un asistente especializado en anonimizar historias clínicas en español.
 
-Tu ÚNICA tarea en este paso es tratar la sección "Responsables del registro".
+Tu ÚNICA tarea en este paso es tratar apellidos.
 
 Instrucciones obligatorias:
 1) Si en el texto aparece un encabezado "Responsables del registro:" (o una variante muy similar, sin importar mayúsculas/minúsculas), debes conservar el encabezado tal cual.
-2) Para todas las líneas inmediatamente posteriores a ese encabezado, hasta encontrarte con:
-   - una línea completamente en blanco, o
-   - una nueva sección claramente separada (por ejemplo una línea que termina en ":" o que está en mayúsculas y parece un encabezado),
-   reemplaza TODO el contenido de la línea por exactamente "[CENSURADO]".
-3) No borres líneas: reemplaza solo su contenido por "[CENSURADO]" pero mantén la estructura y los saltos de línea originales.
-4) No agregues comentarios, explicaciones ni encabezados adicionales. Devuelve exclusivamente el texto transformado (o el original si no hay cambios).
+    Luego debes anonimizar los nombres y apellidos que se encuentren a continuacion. 
+    
+    Por ejemplo:
+
+    Responsables del registro:
+    AE R. VILLANUEVA
+    LIC DOS SANTOS
+
+    Pasaria a ser:
+
+    Responsables del registro:
+    [CENSURADO]
+    [CENSURADO]
+
+2) Si identificas cualquier nombre o apellido en el texto, cambialo por [CENSURADO]. Ejemplos: Juan Perez → [CENSURADO], Rodriguez → [CENSURADO], Dr. Benitez → [CENSURADO].
+3) No agregues comentarios, explicaciones ni encabezados adicionales. Devuelve exclusivamente el texto transformado (o el original si no hay cambios).
 
 Texto a procesar:
 {text}
 """
-
-# =======================================
-# ---- TOOL CASERA PARA CV_TAG ----
-def _parse_number_preserving_sign(num_str: str) -> float:
-    s = num_str.strip()
-    if not s:
-        return 0.0
-
-    sign = -1.0 if s.startswith("-") else 1.0
-    if s[0] in "+-":
-        s = s[1:].strip()
-
-    if "," in s and "." in s:
-        s_clean = s.replace(".", "")
-        s_clean = s_clean.replace(",", ".")
-    elif "," in s:
-        s_clean = s.replace(",", ".")
-    elif s.count(".") > 1:
-        s_clean = s.replace(".", "")
-    else:
-        s_clean = s
-
-    s_clean = re.sub(r"[^0-9.]", "", s_clean)
-    if not s_clean:
-        return 0.0
-
-    try:
-        val = float(s_clean)
-    except ValueError:
-        return 0.0
-
-    return sign * val
-
-
-def _format_number_like_original(original: str, value: float) -> str:
-    s = original.strip()
-    if not s:
-        return str(int(round(value)))
-
-    had_plus = s.startswith("+")
-    if s[0] in "+-":
-        s_body = s[1:].strip()
-    else:
-        s_body = s
-
-    if "," in s_body:
-        dec_sep = ","
-        parts = s_body.split(",")
-        decs = len(parts[1]) if len(parts) > 1 else 0
-    elif "." in s_body:
-        dec_sep = "."
-        parts = s_body.split(".")
-        decs = len(parts[1]) if len(parts) > 1 else 0
-    else:
-        dec_sep = None
-        decs = 0
-
-    val = float(value)
-    is_neg = val < 0
-    val_abs = abs(val)
-
-    if dec_sep is None or decs == 0:
-        formatted = str(int(round(val_abs)))
-    else:
-        formatted = f"{val_abs:.{decs}f}"
-        if dec_sep == ",":
-            formatted = formatted.replace(".", ",")
-
-    if is_neg:
-        formatted = "-" + formatted
-    elif had_plus:
-        formatted = "+" + formatted
-
-    return formatted
-
-
-def perturb_cv_tags(text: str) -> str:
-    """
-    Busca marcas [[CV_TAG: valor]] en el texto y sustituye cada valor
-    por una versión perturbada ±50%, manteniendo el signo.
-    """
-    pattern = re.compile(
-        r"\[\[\s*CV_TAG\s*:\s*([-+]?\d[\d\.,]*)\s*\]\]",
-        flags=re.IGNORECASE,
-    )
-
-    def _repl(match: re.Match) -> str:
-        num_str = match.group(1)
-        original_val = _parse_number_preserving_sign(num_str)
-
-        if original_val == 0 and re.sub(r"[^0-9]", "", num_str) == "":
-            return match.group(0)
-
-        factor = random.uniform(0.5, 1.5)
-        new_val = original_val * factor
-        new_num_str = _format_number_like_original(num_str, new_val)
-        return new_num_str
-
-    return pattern.sub(_repl, text)
 
 # =======================================
 # ---- PDF → lista de páginas (PyMuPDF) ----
@@ -257,17 +159,20 @@ def ollama_generate(
     options: Optional[dict] = None,
 ) -> str:
     base_opts = {
-        "temperature": temperature,
-        "num_ctx": NUM_CTX,
-        "num_predict": NUM_PREDICT,
+        "temperature":    temperature,
+        "num_ctx":        NUM_CTX,
+        "num_predict":    NUM_PREDICT,
+        # ==== Parámetros para penalizar repetición ====
+        "repeat_penalty": 1.1,   # >1 penaliza repetir tokens
+        "repeat_last_n":  256,   # mira las últimas N tokens para penalizar
     }
     if options:
         base_opts.update(options)
 
     payload = {
-        "model": model,
-        "prompt": prompt,
-        "stream": True,
+        "model":   model,
+        "prompt":  prompt,
+        "stream":  True,
         "options": base_opts,
     }
     url = f"{endpoint.rstrip('/')}/api/generate"
@@ -283,6 +188,34 @@ def ollama_generate(
         if part:
             text_parts.append(part)
     return "".join(text_parts).strip()
+
+# ---- Helper: cortar en el primer /think (para todos los prompts salvo el 1) ----
+def strip_think_segment(text: str) -> str:
+    """
+    Si en el texto aparece '/think', devuelve todo lo que está antes del primer '/think'.
+    Si no aparece, devuelve el texto tal cual (solo con strip).
+    """
+    marker = "/think"
+    idx = text.find(marker)
+    if idx == -1:
+        return text.strip()
+    return text[:idx].rstrip()
+
+# ---- Helpers para el marcador de sección ----
+def add_section_marker(text: str) -> str:
+    """Agrega el marcador SECTION_MARKER al inicio del bloque, sin pisar nada."""
+    if not text.strip():
+        return text
+    return f"{SECTION_MARKER}\n\n{text}"
+
+def remove_section_marker(text: str) -> str:
+    """
+    Elimina TODAS las ocurrencias exactas de SECTION_MARKER del texto.
+    SOLO borra ese fragmento, nada más.
+    """
+    cleaned = text.replace(SECTION_MARKER, "")
+    # Opcional: limpiar espacios duplicados que puedan quedar
+    return cleaned.strip()
 
 # ---- Chunking por caracteres (solo el TEXTO, no el template) ----
 def chunk_text_by_chars(text: str, max_chars: int, overlap: int) -> List[str]:
@@ -381,6 +314,7 @@ def run_prompt1_on_first_pages(
         endpoint=OLLAMA_ENDPOINT,
         temperature=TEMPERATURE,
     )
+    # IMPORTANTE: Prompt 1 se devuelve sin strip_think_segment
     return out.strip()
 
 
@@ -454,8 +388,10 @@ def censor_block_text(block_text: str, patient_data_list: List[str]) -> str:
                 endpoint=OLLAMA_ENDPOINT,
                 temperature=TEMPERATURE,
             )
-            out_parts.append(out.strip())
-        return "\n\n".join([p for p in out_parts if p]).strip()
+            # Cortar en el primer /think (si lo hay)
+            out = strip_think_segment(out)
+            out_parts.append(out)
+        return "\n\n".join([p for p in out_parts if p.strip()]).strip()
     else:
         prompt = PROMPT2_TEMPLATE.format(lista=lista_str, text=block_text)
         out = ollama_generate(
@@ -464,7 +400,9 @@ def censor_block_text(block_text: str, patient_data_list: List[str]) -> str:
             endpoint=OLLAMA_ENDPOINT,
             temperature=TEMPERATURE,
         )
-        return out.strip()
+        # Cortar en el primer /think (si lo hay)
+        out = strip_think_segment(out)
+        return out
 
 # =======================================
 # ---- Prompt 3: marcar carga viral en un bloque ----
@@ -483,8 +421,10 @@ def tag_cv_in_block_text(block_text: str) -> str:
                 endpoint=OLLAMA_ENDPOINT,
                 temperature=TEMPERATURE,
             )
-            out_parts.append(out.strip())
-        return "\n\n".join([p for p in out_parts if p]).strip()
+            # Cortar en el primer /think (si lo hay)
+            out = strip_think_segment(out)
+            out_parts.append(out)
+        return "\n\n".join([p for p in out_parts if p.strip()]).strip()
     else:
         prompt = PROMPT3_TEMPLATE.replace("{text}", block_text)
         out = ollama_generate(
@@ -493,43 +433,16 @@ def tag_cv_in_block_text(block_text: str) -> str:
             endpoint=OLLAMA_ENDPOINT,
             temperature=TEMPERATURE,
         )
-        return out.strip()
-
-# =======================================
-# ---- Prompt 4: anonimización general en un bloque ----
-def general_anon_block_text(block_text: str) -> str:
-    if not block_text.strip():
-        return ""
-
-    if USE_CHUNKING and len(block_text) > MAX_CHARS_PER_CHUNK:
-        chunks = chunk_text_by_chars(block_text, MAX_CHARS_PER_CHUNK, OVERLAP)
-        out_parts: List[str] = []
-        for ch in chunks:
-            prompt = PROMPT4_TEMPLATE.replace("{text}", ch)
-            out = ollama_generate(
-                model=MODEL_NAME,
-                prompt=prompt,
-                endpoint=OLLAMA_ENDPOINT,
-                temperature=TEMPERATURE,
-            )
-            out_parts.append(out.strip())
-        return "\n\n".join([p for p in out_parts if p]).strip()
-    else:
-        prompt = PROMPT4_TEMPLATE.replace("{text}", block_text)
-        out = ollama_generate(
-            model=MODEL_NAME,
-            prompt=prompt,
-            endpoint=OLLAMA_ENDPOINT,
-            temperature=TEMPERATURE,
-        )
-        return out.strip()
+        # Cortar en el primer /think (si lo hay)
+        out = strip_think_segment(out)
+        return out
 
 # =======================================
 # ---- Prompt 5: tratar sección "Responsables del registro" ----
 def responsables_block_text(block_text: str) -> str:
     """
     Aplica PROMPT 5 al texto del bloque para censurar la sección
-    'Responsables del registro' si existe.
+    'Responsables del registro' y nombres/apellidos asociados.
     """
     if not block_text.strip():
         return ""
@@ -545,8 +458,10 @@ def responsables_block_text(block_text: str) -> str:
                 endpoint=OLLAMA_ENDPOINT,
                 temperature=TEMPERATURE,
             )
-            out_parts.append(out.strip())
-        return "\n\n".join([p for p in out_parts if p]).strip()
+            # Cortar en el primer /think (si lo hay)
+            out = strip_think_segment(out)
+            out_parts.append(out)
+        return "\n\n".join([p for p in out_parts if p.strip()]).strip()
     else:
         prompt = PROMPT5_TEMPLATE.replace("{text}", block_text)
         out = ollama_generate(
@@ -555,71 +470,64 @@ def responsables_block_text(block_text: str) -> str:
             endpoint=OLLAMA_ENDPOINT,
             temperature=TEMPERATURE,
         )
-        return out.strip()
+        # Cortar en el primer /think (si lo hay)
+        out = strip_think_segment(out)
+        return out
 
 # =======================================
-# ---- Etapa 1 y Etapa 2 por bloque ----
-def process_block_stage1(block_text: str, patient_data_list: List[str]) -> str:
+# ---- Etapa única por bloque ----
+def process_block_full(block_text: str, patient_data_list: List[str]) -> str:
     """
-    Etapa 1 por bloque:
+    Etapa única por bloque:
       - Prompt 2: censurar datos del paciente (lista).
-      - Prompt 4: anonimización general.
+      - Prompt 5: tratar sección 'Responsables del registro'.
+      - Prompt 3: marcar carga viral y redondear al millar más cercano.
 
-    El resultado se pasa a PDF y se guarda en disco para liberar memoria.
+    Regla adicional:
+      Si algún prompt devuelve texto vacío (len == 0 tras strip),
+      se conserva el resultado del paso anterior para no perder contenido.
     """
     if not block_text.strip():
         return ""
 
     if DEBUG_PIPELINE:
-        print("\n===== Nuevo bloque — ETAPA 1 =====")
+        print("\n===== Nuevo bloque — ETAPA ÚNICA =====")
         print("LEN original bloque:", len(block_text))
 
-    # Prompt 2
+    # -------- Prompt 2 --------
     censored_text = censor_block_text(block_text, patient_data_list)
+    if not censored_text.strip():
+        if DEBUG_PIPELINE:
+            print("Prompt 2 devolvió vacío, se conserva el texto original del bloque.")
+        censored_text = block_text
+
     if DEBUG_PIPELINE:
         print("LEN después de Prompt 2 (censura específica):", len(censored_text))
 
-    # Prompt 4
-    anon_text = general_anon_block_text(censored_text)
-    if DEBUG_PIPELINE:
-        print("LEN después de Prompt 4 (anonimización general):", len(anon_text))
-
-    return anon_text
-
-
-def process_block_stage2(block_text: str) -> str:
-    """
-    Etapa 2 por bloque, trabajando sobre el texto ya anonimizado de la Etapa 1:
-      - Prompt 5: tratar sección 'Responsables del registro'.
-      - Prompt 3: marcar carga viral con [[CV_TAG: ...]].
-      - Tool casera: perturb_cv_tags para modificar ±50% esos valores.
-    """
-    if not block_text.strip():
-        return ""
+    # -------- Prompt 5 --------
+    text_resp = responsables_block_text(censored_text)
+    if not text_resp.strip():
+        if DEBUG_PIPELINE:
+            print("Prompt 5 devolvió vacío, se conserva el resultado de Prompt 2.")
+        text_resp = censored_text
 
     if DEBUG_PIPELINE:
-        print("\n===== ETAPA 2 sobre bloque =====")
-        print("LEN entrada Etapa 2:", len(block_text))
+        print("LEN después de Prompt 5 (responsables):", len(text_resp))
 
-    # Prompt 5
-    anon_text_resp = responsables_block_text(block_text)
-    if DEBUG_PIPELINE:
-        print("LEN después de Prompt 5 (responsables):", len(anon_text_resp))
+    # -------- Prompt 3 --------
+    final_text = tag_cv_in_block_text(text_resp)
+    if not final_text.strip():
+        if DEBUG_PIPELINE:
+            print("Prompt 3 devolvió vacío, se conserva el resultado de Prompt 5.")
+        final_text = text_resp
 
-    # Prompt 3
-    tagged_text = tag_cv_in_block_text(anon_text_resp)
     if DEBUG_PIPELINE:
-        print("LEN después de Prompt 3 (tag CV_TAG):", len(tagged_text))
-
-    # Tool casera
-    final_text = perturb_cv_tags(tagged_text)
-    if DEBUG_PIPELINE:
-        print("LEN final después de perturb_cv_tags:", len(final_text))
+        print("LEN después de Prompt 3 (redondeo CV):", len(final_text))
 
     return final_text
 
 # =======================================
-# ---- CORE: PDF → PDF final usando 2 etapas por bloque ----
+# ---- CORE: PDF → PDF final usando 1 etapa por bloque ----
 def full_pipeline_pdf_pages_to_merged_pdf(
     pages_text: List[str],
     patient_data_list: List[str],
@@ -630,12 +538,11 @@ def full_pipeline_pdf_pages_to_merged_pdf(
     """
     Para cada bloque de páginas:
       1) Une las páginas en texto.
-      2) Etapa 1 (Prompt 2 + Prompt 4) → texto1.
-      3) Texto1 → PDF intermedio en carpeta temporal.
-      4) Lee ese PDF intermedio, lo pasa de nuevo a texto.
-      5) Etapa 2 (Prompt 5 + Prompt 3 + tool casera) → texto_final.
-      6) texto_final → PDF final de bloque.
-    Al final, se unen todos los PDFs finales.
+      2) Agrega el marcador ---Sección Intermedia--- al inicio del bloque.
+      3) Etapa única (Prompt 2 + Prompt 5 + Prompt 3) → texto_final.
+      4) Elimina todas las ocurrencias de ---Sección Intermedia---.
+      5) texto_final limpio → PDF de bloque (guardado en carpeta temporal).
+    Al final, se unen todos los PDFs finales y se borra la carpeta temporal.
     """
     num_pages = len(pages_text)
     if num_pages == 0:
@@ -657,66 +564,39 @@ def full_pipeline_pdf_pages_to_merged_pdf(
         total_blocks = len(blocks)
 
         for block_idx, (start_idx, end_idx) in enumerate(blocks, start=1):
-            # ============================
-            # Tomar páginas del bloque
-            # ============================
             block_pages = pages_text[start_idx:end_idx]
             block_text = "\n".join(block_pages).strip()
 
-            # ============================
-            # ETAPA 1: Prompt 2 + Prompt 4
-            # ============================
-            text_stage1 = process_block_stage1(block_text, patient_data_list)
-            pdf_stage1_bytes = text_to_pdf_bytes(text_stage1)
+            # 1) Agregar marcador de nueva sección al inicio del bloque
+            block_text_with_marker = add_section_marker(block_text)
 
-            stage1_path = os.path.join(temp_dir, f"block_{block_idx:04d}_stage1.pdf")
-            with open(stage1_path, "wb") as f:
-                f.write(pdf_stage1_bytes)
+            # 2) Procesar el bloque completo (P2 + P5 + P3)
+            block_result_text = process_block_full(block_text_with_marker, patient_data_list)
 
-            # Liberar memoria de Etapa 1
+            # 3) Eliminar el marcador ---Sección Intermedia--- antes de guardar
+            block_result_text_clean = remove_section_marker(block_result_text)
+
+            # 4) Convertir a PDF
+            block_pdf_bytes = text_to_pdf_bytes(block_result_text_clean)
+
+            block_filename = f"block_{block_idx:04d}.pdf"
+            block_path = os.path.join(temp_dir, block_filename)
+            with open(block_path, "wb") as f:
+                f.write(block_pdf_bytes)
+
+            final_block_paths.append(block_path)
+
+            # Liberar memoria de este bloque
             del block_pages
             del block_text
-            del text_stage1
-            del pdf_stage1_bytes
+            del block_text_with_marker
+            del block_result_text
+            del block_result_text_clean
+            del block_pdf_bytes
 
-            # ============================
-            # ETAPA 2: leer PDF intermedio y terminar pipeline
-            # ============================
-            with open(stage1_path, "rb") as f:
-                stage1_pdf_bytes = f.read()
-
-            # Pasar PDF intermedio a texto
-            stage1_pages_text = pdf_bytes_to_pages(stage1_pdf_bytes)
-            stage1_full_text = "\n".join(stage1_pages_text).strip()
-
-            # Etapa 2: Prompt 5 + Prompt 3 + tool casera
-            text_final = process_block_stage2(stage1_full_text)
-            pdf_final_bytes = text_to_pdf_bytes(text_final)
-
-            final_path = os.path.join(temp_dir, f"block_{block_idx:04d}_final.pdf")
-            with open(final_path, "wb") as f:
-                f.write(pdf_final_bytes)
-
-            final_block_paths.append(final_path)
-
-            # Liberar memoria de Etapa 2
-            del stage1_pdf_bytes
-            del stage1_pages_text
-            del stage1_full_text
-            del text_final
-            del pdf_final_bytes
-
-            # Borrar PDF intermedio de Etapa 1 del disco
-            try:
-                os.remove(stage1_path)
-            except Exception:
-                pass
-
-            # Progreso
             if progress_callback is not None:
                 progress_callback(block_idx, total_blocks)
 
-        # Unir todos los PDFs finales
         merged_pdf_bytes = merge_pdfs(sorted(final_block_paths))
         return merged_pdf_bytes
 
@@ -758,8 +638,7 @@ def main():
             height=200,
         )
 
-        if st.button("🚀 Ejecutar modelo (P1 + (P2+P4) + (P5+P3+CV_TOOL))"):
-            # Paso 1: Prompt 1
+        if st.button("🚀 Ejecutar modelo (P1 + (P2+P5+P3-redondeo-CV) en 1 etapa)"):
             with st.spinner("Paso 1: ejecutando Prompt 1 (extraer datos del encabezado)..."):
                 try:
                     result_prompt_1, raw_list, patient_data_list = extract_patient_data_chain(
@@ -776,7 +655,6 @@ def main():
             st.success("Prompt 1 completado. Datos detectados:")
             st.write("Lista procesada (nombres, doc, dirección):", patient_data_list)
 
-            # Paso 2+: pipeline por bloques en 2 etapas
             progress_bar = st.progress(0)
             status_placeholder = st.empty()
             tempdir_placeholder = st.empty()
@@ -785,14 +663,14 @@ def main():
                 pct = int(current_block / total_blocks * 100)
                 progress_bar.progress(pct)
                 status_placeholder.write(
-                    f"Procesando bloque {current_block} de {total_blocks} (2 etapas por bloque)..."
+                    f"Procesando bloque {current_block} de {total_blocks} (1 etapa por bloque)..."
                 )
 
             def tempdir_cb(path: str) -> None:
-                tempdir_placeholder.caption(f"Carpeta temporal usada: `{path}`")
+                tempdir_placeholder.caption(f"Carpeta temporal usada: {path}")
 
             with st.spinner(
-                "Procesando bloques en 2 etapas: (P2+P4) y luego (P5+P3+CV_TOOL)..."
+                "Procesando bloques en 1 etapa: (P2+P5+P3 con redondeo de carga viral)..."
             ):
                 try:
                     final_pdf_bytes = full_pipeline_pdf_pages_to_merged_pdf(
@@ -821,7 +699,9 @@ def main():
                     file_name="salida_ollama_anonimizada.pdf",
                     mime="application/pdf",
                 )
-                st.success("¡Listo! Se ejecutó el pipeline completo en 2 etapas por bloque y se generó el PDF anonimizado ✅")
+                st.success(
+                    "¡Listo! Se ejecutó el pipeline completo en 1 etapa por bloque y se generó el PDF anonimizado ✅"
+                )
 
     else:
         st.info("Subí un PDF para comenzar.")
