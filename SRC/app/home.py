@@ -1,5 +1,6 @@
 # app.py — Pipeline completo en 1 etapa por bloque:
-# Etapa única: Prompt 2 + Prompt 5 + Prompt 3 (redondear carga viral al millar más cercano)
+# Etapa única: Prompt 2 + Prompt 5 + Prompt 3 (carga viral)
+
 import io
 import os
 import json
@@ -24,7 +25,7 @@ MODEL_CONFIGS = {
     "GPT 20B (Ollama)": {
         "model_name":  "gpt-oss:20b",   # <-- CAMBIÁ ESTE NOMBRE AL QUE USES EN OLLAMA
         "temperature": 0.0,
-        "num_ctx":     25000,       # ejemplo: más contexto para el modelo grande
+        "num_ctx":     25000,
         "num_predict": 9000,
     },
 }
@@ -39,7 +40,7 @@ MAX_CHARS_PER_CHUNK   = 15000           # caracteres por chunk de texto (del doc
 OVERLAP               = 0               # solapamiento entre chunks (en caracteres)
 
 # Procesar de a N páginas de PDF por bloque lógico
-PAGES_PER_BLOCK       = 3               # páginas por bloque
+PAGES_PER_BLOCK       = 5               # páginas por bloque
 
 # Importante para evitar cortes por contexto/salida en Ollama:
 NUM_CTX               = MODEL_CONFIGS["Qwen 8B (Ollama)"]["num_ctx"]      # contexto (tokens del modelo) en Ollama
@@ -50,6 +51,9 @@ DEBUG_PIPELINE        = True
 
 # Marcador de nueva sección por bloque
 SECTION_MARKER        = "---Sección Intermedia---"
+
+# Umbral para detectar salidas "demasiado cortas"
+LENGTH_DIFF_THRESHOLD = 250
 
 # ====== PROMPT 1: extraer datos del encabezado ======
 PROMPT1_TEMPLATE = (
@@ -80,7 +84,7 @@ Dentro de la lista encontraras nombres, apellidos, un documento y una dirección
 Criterios:
 1) Siempre que detectes un nombre o apellido de los que está en la lista cambialos por [CENSURADO].
 2) Siempre que detectes el documento de la lista en el documento cambialo por [CENSURADO]. Este documento no tiene porque aparecer en el documento tal cual como está en la lista. Por dar algunos ejemplos, si en la lista está "12345678" y en el documento encuentras "1234567-8", "1.234.567-8" o "1234567 8" esto debes cambiar por [CENSURADO] también.
-3) Siempre que detectes la dirección de la lista en el documento cambialo por [CENSURADO]. Esta dirección de la lista no tiene porque ser idéntica a la que encuentres en el documento. Por dar algunos ejemplos, si en la lista está "Avenida Libertad 123" y en el documento aparece "Av. Libertad 123" esto debes cambiar por [CENSURADO] también. Si en la lista está "Mateo Cortéz 2395" y en el documento está "M. Cortéz 2395", "Cortéz 2395" o incluso "Cortéz numero 2395", esto debes cambiar por [CENSURADO] también.
+3) Siempre que detectes la dirección de la lista en el documento cambialo por [CENSURADO]. Esta dirección de la lista no tiene porque ser idéntica a la que encuentres en el documento. Por dar algunos ejemplos, si en la lista está "Avenida Libertad 123" y en el documento aparece "Av. Libertad 123" esto debes cambiar por [CENSURADO] también. Si en la lista está "Mateo Cortez 2395" y en el documento está "M. Cortez 2395", "Cortez 2395" o incluso "Cortez numero 2395", esto debes cambiar por [CENSURADO] también.
 4) Por favor manten el formato (no utilices negritas ni aumentes el tamaño de la letra).
 5) MUY IMPORTANTE: si en el texto NO encuentras ninguno de los datos de la lista, devuelve el texto ORIGINAL sin ningún cambio y sin añadir frases como "no hay nada que censurar" ni otros comentarios.
 6) Devuelve ÚNICAMENTE el documento censurado (o el original si no hay cambios), sin explicaciones ni notas adicionales.
@@ -93,11 +97,11 @@ A continuación te comparto el documento:
 {text}
 """
 
-# ====== PROMPT 3: marcar carga viral y redondear al millar más cercano ======
+# ====== PROMPT 3: marcar carga viral y redondear a decenas de millar ======
 PROMPT3_TEMPLATE = """
 Eres un especialista en análisis de textos clínicos en español.
 
-Tu tarea es identificar TODAS las menciones de carga viral en el texto y reemplazar el número por un intervalo como se muestra a continuacion.
+Tu tarea es identificar TODAS las menciones de carga viral en el texto y reemplazar el número por el valor redondeado a las decenas de millar más cercanas.
 
 Instrucciones obligatorias:
 1) Considera como mención de carga viral expresiones en las que aparezcan términos como
@@ -206,7 +210,7 @@ def ollama_generate(
             text_parts.append(part)
     return "".join(text_parts).strip()
 
-# ---- Helper: cortar en el primer /think (para todos los prompts salvo el 1) ----
+# ---- Helper: cortar en el primer /think ----
 def strip_think_segment(text: str) -> str:
     """
     Si en el texto aparece '/think', devuelve todo lo que está antes del primer '/think'.
@@ -226,12 +230,8 @@ def add_section_marker(text: str) -> str:
     return f"{SECTION_MARKER}\n\n{text}"
 
 def remove_section_marker(text: str) -> str:
-    """
-    Elimina TODAS las ocurrencias exactas de SECTION_MARKER del texto.
-    SOLO borra ese fragmento, nada más.
-    """
+    """Elimina TODAS las ocurrencias exactas de SECTION_MARKER del texto."""
     cleaned = text.replace(SECTION_MARKER, "")
-    # Opcional: limpiar espacios duplicados que puedan quedar
     return cleaned.strip()
 
 # ---- Chunking por caracteres (solo el TEXTO, no el template) ----
@@ -331,7 +331,7 @@ def run_prompt1_on_first_pages(
         endpoint=OLLAMA_ENDPOINT,
         temperature=TEMPERATURE,
     )
-    # IMPORTANTE: Prompt 1 se devuelve sin strip_think_segment
+    # Prompt 1 se devuelve sin strip_think_segment
     return out.strip()
 
 
@@ -405,7 +405,6 @@ def censor_block_text(block_text: str, patient_data_list: List[str]) -> str:
                 endpoint=OLLAMA_ENDPOINT,
                 temperature=TEMPERATURE,
             )
-            # Cortar en el primer /think (si lo hay)
             out = strip_think_segment(out)
             out_parts.append(out)
         return "\n\n".join([p for p in out_parts if p.strip()]).strip()
@@ -417,7 +416,6 @@ def censor_block_text(block_text: str, patient_data_list: List[str]) -> str:
             endpoint=OLLAMA_ENDPOINT,
             temperature=TEMPERATURE,
         )
-        # Cortar en el primer /think (si lo hay)
         out = strip_think_segment(out)
         return out
 
@@ -438,7 +436,6 @@ def tag_cv_in_block_text(block_text: str) -> str:
                 endpoint=OLLAMA_ENDPOINT,
                 temperature=TEMPERATURE,
             )
-            # Cortar en el primer /think (si lo hay)
             out = strip_think_segment(out)
             out_parts.append(out)
         return "\n\n".join([p for p in out_parts if p.strip()]).strip()
@@ -450,7 +447,6 @@ def tag_cv_in_block_text(block_text: str) -> str:
             endpoint=OLLAMA_ENDPOINT,
             temperature=TEMPERATURE,
         )
-        # Cortar en el primer /think (si lo hay)
         out = strip_think_segment(out)
         return out
 
@@ -475,7 +471,6 @@ def responsables_block_text(block_text: str) -> str:
                 endpoint=OLLAMA_ENDPOINT,
                 temperature=TEMPERATURE,
             )
-            # Cortar en el primer /think (si lo hay)
             out = strip_think_segment(out)
             out_parts.append(out)
         return "\n\n".join([p for p in out_parts if p.strip()]).strip()
@@ -487,61 +482,94 @@ def responsables_block_text(block_text: str) -> str:
             endpoint=OLLAMA_ENDPOINT,
             temperature=TEMPERATURE,
         )
-        # Cortar en el primer /think (si lo hay)
         out = strip_think_segment(out)
         return out
 
 # =======================================
-# ---- Etapa única por bloque ----
-def process_block_full(block_text: str, patient_data_list: List[str]) -> str:
+# ---- Etapa única por bloque (ULTRA ESTRICTA) ----
+def process_block_full(
+    block_text_with_marker: str,
+    patient_data_list: List[str],
+    orig_len: int,
+    length_diff_threshold: int = LENGTH_DIFF_THRESHOLD,
+) -> Tuple[str, dict, bool, str, int]:
     """
-    Etapa única por bloque:
+    Etapa única por bloque (ULTRA ESTRICTA):
       - Prompt 2: censurar datos del paciente (lista).
       - Prompt 5: tratar sección 'Responsables del registro'.
-      - Prompt 3: marcar carga viral y redondear al millar más cercano.
+      - Prompt 3: marcar carga viral y redondear.
 
-    Regla adicional:
-      Si algún prompt devuelve texto vacío (len == 0 tras strip),
-      se conserva el resultado del paso anterior para no perder contenido.
+    Lógica ultra estricta:
+      - Después de CADA prompt, se mide len(salida).
+      - Si len == 0 o (orig_len - len_salida) > length_diff_threshold:
+            -> se marca fallback_needed = True
+            -> NO se ejecutan los prompts siguientes.
+            -> se devuelve inmediatamente.
+
+    Devuelve:
+      - final_text (lo que haya hasta el momento),
+      - stats (con longitudes),
+      - fallback_needed (bool),
+      - bad_stage_label (str, si hubo problema),
+      - bad_raw_len (int, len de la salida problemática).
     """
-    if not block_text.strip():
-        return ""
+    stats = {"orig_len": orig_len}
+    fallback_needed = False
+    bad_stage_label = ""
+    bad_raw_len = 0
+
+    if not block_text_with_marker.strip():
+        return "", stats, False, "", 0
 
     if DEBUG_PIPELINE:
-        print("\n===== Nuevo bloque — ETAPA ÚNICA =====")
-        print("LEN original bloque:", len(block_text))
+        print("\n===== Nuevo bloque — ETAPA ÚNICA (estricto) =====")
+        print("LEN original bloque (con marker):", orig_len)
 
     # -------- Prompt 2 --------
-    censored_text = censor_block_text(block_text, patient_data_list)
-    if not censored_text.strip():
-        if DEBUG_PIPELINE:
-            print("Prompt 2 devolvió vacío, se conserva el texto original del bloque.")
-        censored_text = block_text
+    p2_out = censor_block_text(block_text_with_marker, patient_data_list)
+    p2_len = len(p2_out.strip())
+    stats["p2_raw_len"] = p2_len
 
     if DEBUG_PIPELINE:
-        print("LEN después de Prompt 2 (censura específica):", len(censored_text))
+        print("LEN después de Prompt 2:", p2_len)
+
+    if p2_len == 0 or (orig_len - p2_len) > length_diff_threshold:
+        # Señal de que hay que reprocesar por página
+        fallback_needed = True
+        bad_stage_label = "Prompt 2"
+        bad_raw_len = p2_len
+        return p2_out, stats, fallback_needed, bad_stage_label, bad_raw_len
 
     # -------- Prompt 5 --------
-    text_resp = responsables_block_text(censored_text)
-    if not text_resp.strip():
-        if DEBUG_PIPELINE:
-            print("Prompt 5 devolvió vacío, se conserva el resultado de Prompt 2.")
-        text_resp = censored_text
+    p5_out = responsables_block_text(p2_out)
+    p5_len = len(p5_out.strip())
+    stats["p5_raw_len"] = p5_len
 
     if DEBUG_PIPELINE:
-        print("LEN después de Prompt 5 (responsables):", len(text_resp))
+        print("LEN después de Prompt 5:", p5_len)
+
+    if p5_len == 0 or (orig_len - p5_len) > length_diff_threshold:
+        fallback_needed = True
+        bad_stage_label = "Prompt 5"
+        bad_raw_len = p5_len
+        return p5_out, stats, fallback_needed, bad_stage_label, bad_raw_len
 
     # -------- Prompt 3 --------
-    final_text = tag_cv_in_block_text(text_resp)
-    if not final_text.strip():
-        if DEBUG_PIPELINE:
-            print("Prompt 3 devolvió vacío, se conserva el resultado de Prompt 5.")
-        final_text = text_resp
+    p3_out = tag_cv_in_block_text(p5_out)
+    p3_len = len(p3_out.strip())
+    stats["p3_raw_len"] = p3_len
 
     if DEBUG_PIPELINE:
-        print("LEN después de Prompt 3 (redondeo CV):", len(final_text))
+        print("LEN después de Prompt 3:", p3_len)
 
-    return final_text
+    if p3_len == 0 or (orig_len - p3_len) > length_diff_threshold:
+        fallback_needed = True
+        bad_stage_label = "Prompt 3"
+        bad_raw_len = p3_len
+        return p3_out, stats, fallback_needed, bad_stage_label, bad_raw_len
+
+    # Si llegaste hasta acá, ningún prompt disparó el fallback
+    return p3_out, stats, False, "", 0
 
 # =======================================
 # ---- CORE: PDF → PDF final usando 1 etapa por bloque ----
@@ -551,19 +579,25 @@ def full_pipeline_pdf_pages_to_merged_pdf(
     pages_per_block: int = PAGES_PER_BLOCK,
     progress_callback: Optional[Callable[[int, int], None]] = None,
     tempdir_callback: Optional[Callable[[str], None]] = None,
-) -> bytes:
+) -> Tuple[bytes, List[str]]:
     """
     Para cada bloque de páginas:
       1) Une las páginas en texto.
       2) Agrega el marcador ---Sección Intermedia--- al inicio del bloque.
-      3) Etapa única (Prompt 2 + Prompt 5 + Prompt 3) → texto_final.
-      4) Elimina todas las ocurrencias de ---Sección Intermedia---.
-      5) texto_final limpio → PDF de bloque (guardado en carpeta temporal).
-    Al final, se unen todos los PDFs finales y se borra la carpeta temporal.
+      3) Etapa única (Prompt 2 + Prompt 5 + Prompt 3) con chequeo ultra estricto.
+      4) Si algún prompt devuelve salida vacía o mucho más corta:
+           - Si hay >1 página en el bloque: reprocesar página por página.
+           - Si hay 1 sola página: se usa lo que haya, pero se registra el evento.
+      5) Elimina todas las ocurrencias de ---Sección Intermedia---.
+      6) texto_final limpio → PDF de bloque (guardado en carpeta temporal).
+
+    Devuelve:
+      - merged_pdf_bytes
+      - fallback_events: lista de mensajes de advertencia para mostrar en Streamlit.
     """
     num_pages = len(pages_text)
     if num_pages == 0:
-        return b""
+        return b"", []
 
     temp_dir = tempfile.mkdtemp(prefix="anon_blocks_")
 
@@ -571,6 +605,7 @@ def full_pipeline_pdf_pages_to_merged_pdf(
         tempdir_callback(temp_dir)
 
     final_block_paths: List[str] = []
+    fallback_events: List[str] = []
 
     try:
         blocks = []
@@ -586,12 +621,61 @@ def full_pipeline_pdf_pages_to_merged_pdf(
 
             # 1) Agregar marcador de nueva sección al inicio del bloque
             block_text_with_marker = add_section_marker(block_text)
+            orig_len = len(block_text_with_marker)
 
-            # 2) Procesar el bloque completo (P2 + P5 + P3)
-            block_result_text = process_block_full(block_text_with_marker, patient_data_list)
+            # 2) Procesar el bloque completo (P2 + P5 + P3) con control ultra estricto
+            block_result_text, stats, need_page_fallback, bad_stage_label, bad_raw_len = process_block_full(
+                block_text_with_marker,
+                patient_data_list,
+                orig_len=orig_len,
+                length_diff_threshold=LENGTH_DIFF_THRESHOLD,
+            )
 
-            # 3) Eliminar el marcador ---Sección Intermedia--- antes de guardar
-            block_result_text_clean = remove_section_marker(block_result_text)
+            # Si se detectó problema y el bloque tiene más de una página,
+            # reprocesar página por página
+            if need_page_fallback and len(block_pages) > 1:
+                fallback_events.append(
+                    f"Bloque {block_idx} (páginas {start_idx+1}-{end_idx}) "
+                    f"reprocesado página por página por salida anómala en {bad_stage_label} "
+                    f"(len_salida={bad_raw_len}, len_original={orig_len})."
+                )
+
+                page_results: List[str] = []
+
+                for page_text in block_pages:
+                    page_text_with_marker = add_section_marker(page_text)
+                    page_orig_len = len(page_text_with_marker)
+
+                    page_result_text, page_stats, page_fallback, page_bad_stage, page_bad_len = process_block_full(
+                        page_text_with_marker,
+                        patient_data_list,
+                        orig_len=page_orig_len,
+                        length_diff_threshold=LENGTH_DIFF_THRESHOLD,
+                    )
+
+                    if page_fallback:
+                        # No hay más nivel de fallback (ya es 1 página),
+                        # pero lo registramos igual.
+                        fallback_events.append(
+                            f"  - Página individual en bloque {block_idx} "
+                            f"tuvo salida anómala en {page_bad_stage} "
+                            f"(len_salida={page_bad_len}, len_original={page_orig_len})."
+                        )
+
+                    page_result_text_clean = remove_section_marker(page_result_text)
+                    page_results.append(page_result_text_clean)
+
+                block_result_text_clean = "\n".join(page_results).strip()
+
+            else:
+                # No hace falta fallback por página (o solo había 1 página)
+                if need_page_fallback and len(block_pages) == 1:
+                    fallback_events.append(
+                        f"Bloque {block_idx} (página {start_idx+1}) tuvo salida anómala en {bad_stage_label} "
+                        f"(len_salida={bad_raw_len}, len_original={orig_len}), "
+                        f"pero no se pudo dividir más (solo una página)."
+                    )
+                block_result_text_clean = remove_section_marker(block_result_text)
 
             # 4) Convertir a PDF
             block_pdf_bytes = text_to_pdf_bytes(block_result_text_clean)
@@ -615,7 +699,7 @@ def full_pipeline_pdf_pages_to_merged_pdf(
                 progress_callback(block_idx, total_blocks)
 
         merged_pdf_bytes = merge_pdfs(sorted(final_block_paths))
-        return merged_pdf_bytes
+        return merged_pdf_bytes, fallback_events
 
     finally:
         try:
@@ -676,7 +760,7 @@ def main():
             height=200,
         )
 
-        if st.button("🚀 Ejecutar modelo (P1 + (P2+P5+P3-redondeo-CV) en 1 etapa)"):
+        if st.button("🚀 Ejecutar modelo (P1 + (P2+P5+P3) en 1 etapa estricta)"):
             with st.spinner("Paso 1: ejecutando Prompt 1 (extraer datos del encabezado)..."):
                 try:
                     result_prompt_1, raw_list, patient_data_list = extract_patient_data_chain(
@@ -696,22 +780,23 @@ def main():
             progress_bar = st.progress(0)
             status_placeholder = st.empty()
             tempdir_placeholder = st.empty()
+            fallback_placeholder = st.empty()
 
             def progress_cb(current_block: int, total_blocks: int) -> None:
                 pct = int(current_block / total_blocks * 100)
                 progress_bar.progress(pct)
                 status_placeholder.write(
-                    f"Procesando bloque {current_block} de {total_blocks} (1 etapa por bloque)..."
+                    f"Procesando bloque {current_block} de {total_blocks} (1 etapa por bloque, modo estricto)..."
                 )
 
             def tempdir_cb(path: str) -> None:
                 tempdir_placeholder.caption(f"Carpeta temporal usada: {path}")
 
             with st.spinner(
-                "Procesando bloques en 1 etapa: (P2+P5+P3 con redondeo de carga viral)..."
+                "Procesando bloques en 1 etapa (P2+P5+P3, con reintento página por página si alguna salida es anómala)..."
             ):
                 try:
-                    final_pdf_bytes = full_pipeline_pdf_pages_to_merged_pdf(
+                    final_pdf_bytes, fallback_events = full_pipeline_pdf_pages_to_merged_pdf(
                         pages_text,
                         patient_data_list=patient_data_list,
                         pages_per_block=PAGES_PER_BLOCK,
@@ -724,6 +809,12 @@ def main():
 
             progress_bar.progress(100)
             status_placeholder.write("Procesamiento completado ✅")
+
+            # Mostrar advertencias si hubo re-procesos por página
+            if fallback_events:
+                fallback_placeholder.warning("Algunos bloques/páginas se reprocesaron página por página por salidas anómalas:")
+                for ev in fallback_events:
+                    fallback_placeholder.write(f"- {ev}")
 
             if not final_pdf_bytes:
                 st.warning(
@@ -738,7 +829,7 @@ def main():
                     mime="application/pdf",
                 )
                 st.success(
-                    "¡Listo! Se ejecutó el pipeline completo en 1 etapa por bloque y se generó el PDF anonimizado ✅"
+                    "¡Listo! Se ejecutó el pipeline completo en 1 etapa por bloque (modo estricto) y se generó el PDF anonimizado ✅"
                 )
 
     else:
