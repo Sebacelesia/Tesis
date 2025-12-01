@@ -22,9 +22,9 @@ MODEL_CONFIGS = {
         "num_predict": 9000,
     },
     "GPT 20B (Ollama)": {
-        "model_name":  "gpt-20b",   # <-- CAMBIÁ ESTE NOMBRE AL QUE USES EN OLLAMA
+        "model_name":  "gpt-oss:20b",   # <-- CAMBIÁ ESTE NOMBRE AL QUE USES EN OLLAMA
         "temperature": 0.0,
-        "num_ctx":     32768,       # ejemplo: más contexto para el modelo grande
+        "num_ctx":     25000,       # ejemplo: más contexto para el modelo grande
         "num_predict": 9000,
     },
 }
@@ -121,7 +121,7 @@ Instrucciones obligatorias:
 
 3) NO modifiques ningún otro número que no esté claramente asociado a carga viral.
 4) Si en el texto NO hay ninguna mención de carga viral, devuelve el texto ORIGINAL sin ningún cambio.
-5) No agregues comentarios, explicaciones ni notas adicionales. Devuelve exclusivamente el texto procesado.
+5) Devuelve ÚNICAMENTE el documento censurado (o el original si no hay cambios), sin explicaciones ni notas adicionales.
 
 Texto a procesar:
 {text}
@@ -150,7 +150,7 @@ Instrucciones obligatorias:
     [CENSURADO]
 
 2) Si identificas cualquier nombre o apellido en el texto, cambialo por [CENSURADO]. Ejemplos: Juan Perez → [CENSURADO], Rodriguez → [CENSURADO], Dr. Benitez → [CENSURADO].
-3) No agregues comentarios, explicaciones ni encabezados adicionales. Devuelve exclusivamente el texto transformado (o el original si no hay cambios).
+3) Devuelve ÚNICAMENTE el documento censurado (o el original si no hay cambios), sin explicaciones ni notas adicionales.
 
 Texto a procesar:
 {text}
