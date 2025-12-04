@@ -11,6 +11,7 @@ from typing import Optional, List, Callable, Tuple
 
 import requests
 import streamlit as st
+from datetime import datetime, date
 
 # ====== CONFIGURACIONES DE MODELOS ======
 # Ajustá los nombres de modelo ("model_name") según cómo los tengas en Ollama.
@@ -47,9 +48,6 @@ NUM_PREDICT           = MODEL_CONFIGS["Qwen 8B (Ollama)"]["num_predict"]  # toke
 
 # Flag de debug para ver longitudes en consola
 DEBUG_PIPELINE        = True
-
-# Marcador de nueva sección por bloque (para ayudar al modelo)
-SECTION_MARKER        = "---Sección Intermedia---"
 
 # Regex para encabezados de secciones en el texto
 SECTION_HEADER_REGEX = re.compile(
@@ -114,15 +112,15 @@ Instrucciones obligatorias:
    - "CV 120000"
    u otras variantes similares.
 
-2) Para cada número que represente una carga viral sustituye este por el redondeo a las decenas de millar mas cercano.
+2) Para cada número que represente una carga viral sustituye este por el redondeo al millar mas cercano, exceptuando los valores entre 0 y 1000.
 
    Ejemplos de como cambiar el numero:
 
-   - 123456 → 120000
-   - 1201 → 0
-   - 14999 → 10000
+   - 123456 → 123000
+   - 1201 → 1000
+   - 625 → 625
    - 10000 → 10000
-   - -234567 → -230000
+   - -234567 → -235000
 
 3) NO modifiques ningún otro número que no esté claramente asociado a carga viral.
 4) Si en el texto NO hay ninguna mención de carga viral, devuelve el texto ORIGINAL sin ningún cambio.
@@ -172,6 +170,37 @@ def pdf_bytes_to_pages(pdf_bytes: bytes) -> List[str]:
     doc.close()
     return pages
 
+# =======================================
+# ---- construir texto seccionado por "Fecha:" ----
+def build_sectioned_text_from_pages(pages_text: List[str]) -> str:
+    """
+    Une todas las páginas en un solo texto, lo divide por 'Fecha:'
+    y arma secciones numeradas empezando en 1:
+
+        --- Sección 1 ---
+        Fecha: ...
+        ...
+
+        --- Sección 2 ---
+        Fecha: ...
+        ...
+    """
+    full_text = "\n".join(pages_text).strip()
+    if not full_text:
+        return ""
+
+    # Dividir evoluciones por "Fecha:"
+    evoluciones = re.split(r'(?=Fecha:)', full_text)
+
+    # Filtrar secciones muy cortas (por ejemplo, menos de 10 palabras)
+    evoluciones_filtradas = [sec.strip() for sec in evoluciones if len(sec.split()) >= 10]
+
+    partes: List[str] = []
+    for i, sec in enumerate(evoluciones_filtradas, start=1):
+        partes.append(f"--- Sección {i} ---\n{sec.strip()}\n")
+
+    return "\n\n".join(partes).strip()
+
 # ---- Llamada a Ollama (streaming) ----
 def ollama_generate(
     model: str,
@@ -179,98 +208,36 @@ def ollama_generate(
     endpoint: str = OLLAMA_ENDPOINT,
     temperature: float = TEMPERATURE,
     options: Optional[dict] = None,
-    # parámetros extra a nivel de request (no van dentro de options)
-    think: Optional[bool | str] = None,   # False / True / "low" / "medium" / "high"
-    raw: bool = False,
-    logprobs: bool = False,
-    top_logprobs: int = 0,
 ) -> str:
-    """
-    Wrapper para /api/generate de Ollama.
-
-    - Usa un set de hiperparámetros por defecto (base_opts).
-    - Permite sobreescribir cualquier cosa con 'options'.
-    - Permite activar thinking mode con 'think'.
-    - Permite pedir logprobs.
-    """
-
-    # ==== OPCIONES POR DEFECTO (se pueden pisar con 'options') ====
     base_opts = {
-        # Creatividad / aleatoriedad
-        "temperature":       temperature,
-
-        # Longitud de contexto y de salida
-        "num_ctx":           NUM_CTX,      # tokens de contexto máximos
-        "num_predict":       NUM_PREDICT,  # tokens de salida máximos
-        "num_keep":          0,            # cuántos tokens del prompt sí o sí se preservan al truncar
-
-        # Muestreo (sampling)
-        "top_k":             40,           # nº máximo de tokens candidatos
-        "top_p":             0.9,          # nucleus sampling (prob acumulada)
-        "min_p":             0.0,          # prob mínima; tokens debajo de esto se descartan
-        "tfs_z":             1.0,          # Tail Free Sampling (1.0 = desactivado)
-        "typical_p":         1.0,          # Typical sampling (1.0 = desactivado)
-
-        # Penalizaciones por repetición / presencia / frecuencia
-        "repeat_last_n":     256,          # ventana de tokens recientes a considerar
-        "repeat_penalty":    1.1,          # >1 penaliza repetir (1.0 = sin penalización)
-        "presence_penalty":  0.0,          # penaliza aparecer al menos una vez
-        "frequency_penalty": 0.0,          # penaliza según cuántas veces aparece
-        "penalize_newline":  False,        # si también penalizar saltos de línea
-
-        # Mirostat (otro esquema de muestreo)
-        "mirostat":          0,            # 0 = apagado, 1 o 2 = mirostat activado
-        "mirostat_tau":      5.0,          # entropía objetivo
-        "mirostat_eta":      0.1,          # tasa de adaptación
-
-        # Reproducibilidad
-        "seed":              0,            # 0 = aleatorio; >0 = mismo resultado con mismo prompt
-
-        # Dónde cortar la generación (STOP tokens)
-        "stop":              [],
+        "temperature":    temperature,
+        "num_ctx":        NUM_CTX,
+        "num_predict":    NUM_PREDICT,
+        # ==== Parámetros para penalizar repetición ====
+        "repeat_penalty": 1.1,   # >1 penaliza repetir tokens
+        "repeat_last_n":  256,   # mira las últimas N tokens para penalizar
     }
-
-    # Si nos pasan un dict 'options', pisa los defaults anteriores
     if options:
         base_opts.update(options)
 
-    # ==== Construir payload principal ====
-    payload: dict = {
+    payload = {
         "model":   model,
         "prompt":  prompt,
         "stream":  True,
         "options": base_opts,
-        "raw":     raw,
     }
-
-    # Thinking mode (si el modelo lo soporta)
-    if think is not None:
-        payload["think"] = think
-
-    # Probabilidades de tokens (logprobs)
-    if logprobs:
-        payload["logprobs"] = True
-        if top_logprobs > 0:
-            payload["top_logprobs"] = int(top_logprobs)
-
     url = f"{endpoint.rstrip('/')}/api/generate"
     resp = requests.post(url, json=payload, stream=True, timeout=600)
     resp.raise_for_status()
 
-    text_parts: List[str] = []
+    text_parts = []
     for line in resp.iter_lines():
         if not line:
             continue
         chunk = json.loads(line)
-
-        # El texto "normal" viene en la clave 'response'
         part = chunk.get("response", "")
         if part:
             text_parts.append(part)
-
-        # Si quisieras capturar también el "thinking":
-        # thinking_part = chunk.get("thinking")
-
     return "".join(text_parts).strip()
 
 # ---- Helper: cortar en el primer /think (para todos los prompts salvo el 1) ----
@@ -284,22 +251,6 @@ def strip_think_segment(text: str) -> str:
     if idx == -1:
         return text.strip()
     return text[:idx].rstrip()
-
-# ---- Helpers para el marcador de sección ----
-def add_section_marker(text: str) -> str:
-    """Agrega el marcador SECTION_MARKER al inicio del bloque, sin pisar nada."""
-    if not text.strip():
-        return text
-    return f"{SECTION_MARKER}\n\n{text}"
-
-def remove_section_marker(text: str) -> str:
-    """
-    Elimina TODAS las ocurrencias exactas de SECTION_MARKER del texto.
-    SOLO borra ese fragmento, nada más.
-    """
-    cleaned = text.replace(SECTION_MARKER, "")
-    # Opcional: limpiar espacios duplicados que puedan quedar
-    return cleaned.strip()
 
 # ---- Chunking por caracteres (solo el TEXTO, no el template) ----
 def chunk_text_by_chars(text: str, max_chars: int, overlap: int) -> List[str]:
@@ -388,8 +339,8 @@ def split_text_into_sections(text: str) -> List[Tuple[int, str]]:
     Divide el texto completo en una lista de tuplas (numero_seccion, texto_de_la_seccion).
 
     Los encabezados esperados son líneas tipo:
-        --- Sección 0 ---
-        --- Seccion 1 ---
+        --- Sección 1 ---
+        --- Seccion 2 ---
     (con o sin tilde en 'ó').
 
     Si no se encuentra ninguna sección, devuelve una sola "sección" 0 con todo el texto.
@@ -422,6 +373,42 @@ def split_text_into_sections(text: str) -> List[Tuple[int, str]]:
         sections.append((sec_num, full_section_text))
 
     return sections
+
+# ---- extraer fecha de una sección ----
+def extract_date_from_section_text(text: str) -> Optional[str]:
+    """
+    Busca una fecha con formato dd/mm/aaaa en el texto de la sección.
+    Devuelve un string 'dd/mm/aaaa' o None si no se encuentra.
+    """
+    m = re.search(r"\b(\d{1,2}/\d{1,2}/\d{4})\b", text)
+    if m:
+        return m.group(1).strip()
+    return None
+
+def map_section_ids_to_dates(sections: List[Tuple[int, str]]):
+    """
+    Devuelve:
+      - dict {id_seccion -> date | None}
+      - lista con todas las fechas (tipo date) encontradas
+    """
+    section_dates = {}
+    all_dates: List[date] = []
+
+    for sid, sec_text in sections:
+        if sid >= 0:
+            d_str = extract_date_from_section_text(sec_text)
+            if d_str:
+                try:
+                    d = datetime.strptime(d_str, "%d/%m/%Y").date()
+                except ValueError:
+                    d = None
+            else:
+                d = None
+            section_dates[sid] = d
+            if d is not None:
+                all_dates.append(d)
+
+    return section_dates, all_dates
 
 # =======================================
 # ---- Helpers Prompt 1 ----
@@ -652,91 +639,88 @@ def process_block_full(block_text: str, patient_data_list: List[str]) -> str:
     return final_text
 
 # =======================================
-# ---- CORE: PDF → PDF final usando 1 etapa por bloque (por SECCIONES) ----
+# ---- CORE: PDF → PDF final usando 1 etapa por bloque (filtrado por RANGO DE FECHAS) ----
 def full_pipeline_pdf_pages_to_merged_pdf(
     pages_text: List[str],
     patient_data_list: List[str],
     sections_per_block: int = SECTIONS_PER_BLOCK,
-    section_start: Optional[int] = None,
-    section_end: Optional[int] = None,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
     progress_callback: Optional[Callable[[int, int], None]] = None,
     tempdir_callback: Optional[Callable[[str], None]] = None,
 ) -> bytes:
     """
     Nuevo comportamiento:
-    - Se une el texto de todas las páginas.
+    - Se construye un texto seccionado a partir de las páginas (por 'Fecha:', secciones 1..N).
     - Se divide en secciones usando encabezados tipo '--- Sección N ---'.
-    - Se define un rango [section_start, section_end] de secciones a procesar.
-    - Solo esas secciones se pasan por el pipeline (P2+P5+P3) en bloques de `sections_per_block`.
-    - El resto de las secciones se copia tal cual (sin procesar).
-    - Cada bloque (procesado o crudo) se convierte a un PDF parcial; al final se unen todos.
+    - Se extrae la fecha de cada sección.
+    - Se procesan SOLO las secciones cuya fecha esté entre [start_date, end_date] (inclusive),
+      y SIEMPRE se incluye la sección 1 si existe.
+    - Si ninguna sección tiene fecha detectable, se ignora el filtro y se procesan todas.
     """
-    full_text = "\n".join(pages_text).strip()
+    full_text = build_sectioned_text_from_pages(pages_text)
     if not full_text:
         return b""
 
     sections = split_text_into_sections(full_text)  # List[(sec_id, sec_text)]
-
-    # Determinar rango por defecto si no se especifica
     section_ids = [sid for sid, _ in sections if sid >= 0]
-    if section_ids:
-        min_sec = min(section_ids)
-        max_sec = max(section_ids)
+
+    # Mapear sección -> fecha
+    section_dates, all_dates = map_section_ids_to_dates(sections)
+
+    # ¿Hay al menos una fecha válida en alguna sección?
+    has_any_date = len(all_dates) > 0
+
+    if not has_any_date or start_date is None or end_date is None:
+        # Sin fechas o sin rango: procesar todas las secciones
+        sections_to_process_ids = set(section_ids)
     else:
-        min_sec = 0
-        max_sec = 0
+        # Filtrar por rango
+        sections_to_process_ids = {
+            sid
+            for sid in section_ids
+            if (section_dates.get(sid) is not None
+                and start_date <= section_dates[sid] <= end_date)
+        }
 
-    if section_start is None:
-        section_start = min_sec
-    if section_end is None:
-        section_end = max_sec
+    # SIEMPRE incluir sección 1 si existe
+    if 1 in section_ids:
+        sections_to_process_ids.add(1)
 
-    # Set de secciones que vamos a procesar
-    sections_to_process = {
-        sid for sid in section_ids if section_start <= sid <= section_end
-    }
+    # Filtrar solo las secciones dentro del set (las otras se descartan)
+    sections_to_use: List[Tuple[int, str]] = []
+    for sid, sec_text in sections:
+        if sid >= 0 and sid in sections_to_process_ids:
+            txt = sec_text.strip()
+            if txt:
+                sections_to_use.append((sid, txt))
 
-    # Construimos "chunks" de texto:
-    #   - Chunks procesables: hasta `sections_per_block` secciones consecutivas dentro del rango.
-    #   - Chunks crudos: secciones fuera del rango, tal cual.
-    chunks: List[Tuple[str, bool]] = []  # (texto, debe_procesarse)
-    buffer: List[str] = []               # para agrupar secciones procesables
-    buffer_count = 0
+    # Si no hay secciones para procesar, devolvemos vacío
+    if not sections_to_use:
+        return b""
 
-    def flush_buffer():
-        nonlocal buffer, buffer_count
-        if buffer:
+    # Construimos bloques de hasta `sections_per_block` secciones consecutivas (en orden lógico)
+    chunks: List[str] = []
+    buffer: List[str] = []
+
+    for _, sec_text in sections_to_use:
+        buffer.append(sec_text)
+        if len(buffer) >= sections_per_block:
             block_text = "\n".join(buffer).strip()
             if block_text:
-                chunks.append((block_text, True))
-        buffer = []
-        buffer_count = 0
+                chunks.append(block_text)
+            buffer = []
 
-    for sid, sec_text in sections:
-        in_range = (sid in sections_to_process) if sid >= 0 else False
+    # Bloque final si quedó algo pendiente
+    if buffer:
+        block_text = "\n".join(buffer).strip()
+        if block_text:
+            chunks.append(block_text)
 
-        if not in_range:
-            # Si hay un bloque procesable pendiente, lo cerramos
-            flush_buffer()
-            # Esta sección se agrega cruda
-            if sec_text.strip():
-                chunks.append((sec_text.strip(), False))
-        else:
-            # Sección dentro del rango a procesar
-            buffer.append(sec_text.strip())
-            buffer_count += 1
-            if buffer_count >= sections_per_block:
-                flush_buffer()
-
-    # Si quedó un bloque procesable pendiente al final
-    flush_buffer()
-
-    # Si por alguna razón no hay chunks (texto vacío), devolvemos vacío
     if not chunks:
         return b""
 
-    # Contar cuantos bloques realmente van a pasar por el modelo (para la barra de progreso)
-    total_blocks_to_process = sum(1 for _, do_proc in chunks if do_proc)
+    total_blocks_to_process = len(chunks)
 
     temp_dir = tempfile.mkdtemp(prefix="anon_sections_")
     if tempdir_callback is not None:
@@ -747,35 +731,18 @@ def full_pipeline_pdf_pages_to_merged_pdf(
     try:
         processed_blocks = 0
 
-        for idx, (chunk_text, do_process) in enumerate(chunks, start=1):
-            if do_process:
-                # Bloque que va por el pipeline
-                if DEBUG_PIPELINE:
-                    print(f"\n### Procesando bloque de secciones (chunk #{idx}) ###")
-                    print("LEN chunk original:", len(chunk_text))
+        for idx, chunk_text in enumerate(chunks, start=1):
+            if DEBUG_PIPELINE:
+                print(f"\n### Procesando bloque de secciones (chunk #{idx}) ###")
+                print("LEN chunk original:", len(chunk_text))
 
-                # 1) Agregar marcador de nueva sección al inicio del bloque
-                block_text_with_marker = add_section_marker(chunk_text)
+            block_result_text = process_block_full(chunk_text, patient_data_list)
 
-                # 2) Procesar el bloque completo (P2 + P5 + P3)
-                block_result_text = process_block_full(block_text_with_marker, patient_data_list)
+            block_pdf_bytes = text_to_pdf_bytes(block_result_text)
 
-                # 3) Eliminar el marcador ---Sección Intermedia--- antes de guardar
-                block_result_text_clean = remove_section_marker(block_result_text)
-
-                # 4) Convertir a PDF
-                block_pdf_bytes = text_to_pdf_bytes(block_result_text_clean)
-
-                processed_blocks += 1
-                if progress_callback is not None and total_blocks_to_process > 0:
-                    progress_callback(processed_blocks, total_blocks_to_process)
-            else:
-                # Bloque crudo (fuera de rango), sin pasar por el modelo
-                if DEBUG_PIPELINE:
-                    print(f"\n### Bloque sin procesar (chunk #{idx}) ###")
-                    print("LEN chunk original:", len(chunk_text))
-
-                block_pdf_bytes = text_to_pdf_bytes(chunk_text)
+            processed_blocks += 1
+            if progress_callback is not None and total_blocks_to_process > 0:
+                progress_callback(processed_blocks, total_blocks_to_process)
 
             block_filename = f"block_{idx:04d}.pdf"
             block_path = os.path.join(temp_dir, block_filename)
@@ -784,11 +751,9 @@ def full_pipeline_pdf_pages_to_merged_pdf(
 
             final_block_paths.append(block_path)
 
-            # Liberar memoria de este chunk
             del block_pdf_bytes
             del chunk_text
 
-        # Unir todos los PDFs (procesados + crudos)
         merged_pdf_bytes = merge_pdfs(sorted(final_block_paths))
         return merged_pdf_bytes
 
@@ -837,57 +802,78 @@ def main():
                 st.stop()
 
         num_pages = len(pages_text)
-        full_text = "\n".join(pages_text).strip()
 
-        # Dividir en secciones para mostrar info y permitir elegir rango
-        sections = split_text_into_sections(full_text)
+        # Construir texto seccionado
+        sectioned_text = build_sectioned_text_from_pages(pages_text)
+
+        # Dividir en secciones para info e identificar rango de fechas
+        sections = split_text_into_sections(sectioned_text)
         section_ids = [sid for sid, _ in sections if sid >= 0]
-        if section_ids:
-            min_sec = min(section_ids)
-            max_sec = max(section_ids)
-        else:
-            min_sec = 0
-            max_sec = 0
+
+        section_dates_map, all_dates = map_section_ids_to_dates(sections)
 
         st.success(f"PDF leído correctamente. Páginas detectadas: {num_pages}")
         st.caption(
-            f"Caracteres extraídos (total): {len(full_text)} | "
+            f"Caracteres extraídos (texto seccionado): {len(sectioned_text)} | "
             f"chunk: {MAX_CHARS_PER_CHUNK} | overlap: {OVERLAP} | "
             f"bloque de secciones: {SECTIONS_PER_BLOCK}"
         )
         st.caption(
-            f"Secciones detectadas: {len([sid for sid in section_ids])} "
-            f"(rango numérico: {min_sec}–{max_sec})"
+            f"Secciones detectadas: {len(section_ids)}. "
+            f"La Sección 1 se incluirá SIEMPRE en el resultado."
         )
 
+        if all_dates:
+            min_date_found = min(all_dates)
+            max_date_found = max(all_dates)
+            st.caption(
+                f"Rango de fechas detectadas en las evoluciones: "
+                f"{min_date_found.strftime('%d/%m/%Y')} – {max_date_found.strftime('%d/%m/%Y')}"
+            )
+        else:
+            min_date_found = max_date_found = None
+            st.warning(
+                "No se detectaron fechas con formato dd/mm/aaaa en las secciones. "
+                "Si no especificás rango, se procesarán todas las secciones."
+            )
+
         st.text_area(
-            "Vista previa del texto (primeras páginas)",
-            value=full_text[:2000] + ("..." if len(full_text) > 2000 else ""),
+            "Vista previa del texto seccionado",
+            value=sectioned_text[:2000] + ("..." if len(sectioned_text) > 2000 else ""),
             height=200,
         )
 
-        # Controles para elegir qué secciones procesar
-        start_section = st.number_input(
-            "Sección inicial a procesar",
-            min_value=int(min_sec),
-            max_value=int(max_sec),
-            value=int(min_sec),
-            step=1,
-        )
-        end_section = st.number_input(
-            "Sección final a procesar",
-            min_value=int(start_section),
-            max_value=int(max_sec),
-            value=int(max_sec),
-            step=1,
-        )
+        # === Rango de fechas en la UI ===
+        hoy = datetime.today().date()
+        default_start = min_date_found or hoy
+        default_end = max_date_found or hoy
+
+        col1, col2 = st.columns(2)
+        with col1:
+            start_date = st.date_input(
+                "Fecha inicial (inclusive)",
+                value=default_start,
+                format="DD/MM/YYYY",
+            )
+        with col2:
+            end_date = st.date_input(
+                "Fecha final (inclusive)",
+                value=default_end,
+                format="DD/MM/YYYY",
+            )
+
+        if end_date < start_date:
+            st.error("La fecha final no puede ser anterior a la fecha inicial.")
+            st.stop()
+
         st.caption(
-            f"Se procesarán solo las secciones desde la {start_section} hasta la {end_section} "
-            f"en bloques de {SECTIONS_PER_BLOCK} secciones."
+            "Se procesarán todas las secciones cuya fecha esté dentro del rango indicado "
+            "y, adicionalmente, la Sección 1 si existe. "
+            "Si ninguna sección tiene fecha detectable, se ignora el filtro y se procesan todas."
         )
 
-        if st.button("🚀 Ejecutar modelo (P1 + (P2+P5+P3-redondeo-CV) en 1 etapa por bloque de SECCIONES)"):
-            # Paso 1: Prompt 1 para extraer datos del encabezado (se mantiene sobre las primeras páginas)
+        if st.button("🚀 Ejecutar modelo (P1 + (P2+P5+P3-redondeo-CV) filtrando por rango de fechas)"):
+            # Paso 1: Prompt 1 (encabezado)
             with st.spinner("Paso 1: ejecutando Prompt 1 (extraer datos del encabezado)..."):
                 try:
                     result_prompt_1, raw_list, patient_data_list = extract_patient_data_chain(
@@ -912,22 +898,23 @@ def main():
                 pct = int(current_block / total_blocks * 100)
                 progress_bar.progress(pct)
                 status_placeholder.write(
-                    f"Procesando bloque {current_block} de {total_blocks} (1 etapa por bloque de SECCIONES)..."
+                    f"Procesando bloque {current_block} de {total_blocks} "
+                    f"(1 etapa por bloque, filtrado por rango de fechas)..."
                 )
 
             def tempdir_cb(path: str) -> None:
                 tempdir_placeholder.caption(f"Carpeta temporal usada: {path}")
 
             with st.spinner(
-                "Procesando bloques en 1 etapa: (P2+P5+P3 con redondeo de carga viral, por secciones)..."
+                "Procesando bloques en 1 etapa: (P2+P5+P3 con redondeo de carga viral, filtrando por rango de fechas)..."
             ):
                 try:
                     final_pdf_bytes = full_pipeline_pdf_pages_to_merged_pdf(
                         pages_text,
                         patient_data_list=patient_data_list,
                         sections_per_block=SECTIONS_PER_BLOCK,
-                        section_start=int(start_section),
-                        section_end=int(end_section),
+                        start_date=start_date,
+                        end_date=end_date,
                         progress_callback=progress_cb,
                         tempdir_callback=tempdir_cb,
                     )
@@ -940,7 +927,7 @@ def main():
 
             if not final_pdf_bytes:
                 st.warning(
-                    "La salida está vacía. Revisá el PDF original o ajustá parámetros."
+                    "La salida está vacía. Revisá el PDF original o el rango de fechas indicado."
                 )
             else:
                 st.subheader("📄 Descarga")
@@ -951,7 +938,7 @@ def main():
                     mime="application/pdf",
                 )
                 st.success(
-                    "¡Listo! Se ejecutó el pipeline completo en 1 etapa por bloque de secciones y se generó el PDF anonimizado ✅"
+                    "¡Listo! Se ejecutó el pipeline completo filtrando por rango de fechas y se generó el PDF anonimizado ✅"
                 )
 
     else:
