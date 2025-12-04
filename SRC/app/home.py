@@ -179,36 +179,98 @@ def ollama_generate(
     endpoint: str = OLLAMA_ENDPOINT,
     temperature: float = TEMPERATURE,
     options: Optional[dict] = None,
+    # parámetros extra a nivel de request (no van dentro de options)
+    think: Optional[bool | str] = None,   # False / True / "low" / "medium" / "high"
+    raw: bool = False,
+    logprobs: bool = False,
+    top_logprobs: int = 0,
 ) -> str:
+    """
+    Wrapper para /api/generate de Ollama.
+
+    - Usa un set de hiperparámetros por defecto (base_opts).
+    - Permite sobreescribir cualquier cosa con 'options'.
+    - Permite activar thinking mode con 'think'.
+    - Permite pedir logprobs.
+    """
+
+    # ==== OPCIONES POR DEFECTO (se pueden pisar con 'options') ====
     base_opts = {
-        "temperature":    temperature,
-        "num_ctx":        NUM_CTX,
-        "num_predict":    NUM_PREDICT,
-        # ==== Parámetros para penalizar repetición ====
-        "repeat_penalty": 1.1,   # >1 penaliza repetir tokens
-        "repeat_last_n":  256,   # mira las últimas N tokens para penalizar
+        # Creatividad / aleatoriedad
+        "temperature":       temperature,
+
+        # Longitud de contexto y de salida
+        "num_ctx":           NUM_CTX,      # tokens de contexto máximos
+        "num_predict":       NUM_PREDICT,  # tokens de salida máximos
+        "num_keep":          0,            # cuántos tokens del prompt sí o sí se preservan al truncar
+
+        # Muestreo (sampling)
+        "top_k":             40,           # nº máximo de tokens candidatos
+        "top_p":             0.9,          # nucleus sampling (prob acumulada)
+        "min_p":             0.0,          # prob mínima; tokens debajo de esto se descartan
+        "tfs_z":             1.0,          # Tail Free Sampling (1.0 = desactivado)
+        "typical_p":         1.0,          # Typical sampling (1.0 = desactivado)
+
+        # Penalizaciones por repetición / presencia / frecuencia
+        "repeat_last_n":     256,          # ventana de tokens recientes a considerar
+        "repeat_penalty":    1.1,          # >1 penaliza repetir (1.0 = sin penalización)
+        "presence_penalty":  0.0,          # penaliza aparecer al menos una vez
+        "frequency_penalty": 0.0,          # penaliza según cuántas veces aparece
+        "penalize_newline":  False,        # si también penalizar saltos de línea
+
+        # Mirostat (otro esquema de muestreo)
+        "mirostat":          0,            # 0 = apagado, 1 o 2 = mirostat activado
+        "mirostat_tau":      5.0,          # entropía objetivo
+        "mirostat_eta":      0.1,          # tasa de adaptación
+
+        # Reproducibilidad
+        "seed":              0,            # 0 = aleatorio; >0 = mismo resultado con mismo prompt
+
+        # Dónde cortar la generación (STOP tokens)
+        "stop":              [],
     }
+
+    # Si nos pasan un dict 'options', pisa los defaults anteriores
     if options:
         base_opts.update(options)
 
-    payload = {
+    # ==== Construir payload principal ====
+    payload: dict = {
         "model":   model,
         "prompt":  prompt,
         "stream":  True,
         "options": base_opts,
+        "raw":     raw,
     }
+
+    # Thinking mode (si el modelo lo soporta)
+    if think is not None:
+        payload["think"] = think
+
+    # Probabilidades de tokens (logprobs)
+    if logprobs:
+        payload["logprobs"] = True
+        if top_logprobs > 0:
+            payload["top_logprobs"] = int(top_logprobs)
+
     url = f"{endpoint.rstrip('/')}/api/generate"
     resp = requests.post(url, json=payload, stream=True, timeout=600)
     resp.raise_for_status()
 
-    text_parts = []
+    text_parts: List[str] = []
     for line in resp.iter_lines():
         if not line:
             continue
         chunk = json.loads(line)
+
+        # El texto "normal" viene en la clave 'response'
         part = chunk.get("response", "")
         if part:
             text_parts.append(part)
+
+        # Si quisieras capturar también el "thinking":
+        # thinking_part = chunk.get("thinking")
+
     return "".join(text_parts).strip()
 
 # ---- Helper: cortar en el primer /think (para todos los prompts salvo el 1) ----
