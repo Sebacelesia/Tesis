@@ -12,27 +12,49 @@ from typing import Optional, List, Callable, Tuple
 import requests
 import streamlit as st
 
-# ====== PARÁMETROS FIJOS ======
+# ====== CONFIGURACIONES DE MODELOS ======
+# Ajustá los nombres de modelo ("model_name") según cómo los tengas en Ollama.
+MODEL_CONFIGS = {
+    "Qwen 8B (Ollama)": {
+        "model_name":  "qwen3:8b",
+        "temperature": 0.0,
+        "num_ctx":     16384,
+        "num_predict": 9000,
+    },
+    "GPT 20B (Ollama)": {
+        "model_name":  "gpt-oss:20b",   # <-- CAMBIÁ ESTE NOMBRE AL QUE USES EN OLLAMA
+        "temperature": 0.0,
+        "num_ctx":     25000,           # ejemplo: más contexto para el modelo grande
+        "num_predict": 9000,
+    },
+}
+
+# ====== PARÁMETROS FIJOS (se inicializan con Qwen 8B y luego se pisan según la selección en la UI) ======
 OLLAMA_ENDPOINT = "http://localhost:11434"
-MODEL_NAME      = "qwen3:8b"
-TEMPERATURE     = 0.0
+MODEL_NAME      = MODEL_CONFIGS["Qwen 8B (Ollama)"]["model_name"]
+TEMPERATURE     = MODEL_CONFIGS["Qwen 8B (Ollama)"]["temperature"]
 
 USE_CHUNKING          = True            # si el texto supera MAX_CHARS_PER_CHUNK, se parte
 MAX_CHARS_PER_CHUNK   = 15000           # caracteres por chunk de texto (del documento)
 OVERLAP               = 0               # solapamiento entre chunks (en caracteres)
 
-# Procesar de a N páginas de PDF por bloque lógico
-PAGES_PER_BLOCK       = 3               # páginas por bloque
+# Procesar de a N secciones por bloque lógico
+SECTIONS_PER_BLOCK    = 3               # secciones por bloque
 
 # Importante para evitar cortes por contexto/salida en Ollama:
-NUM_CTX               = 16384           # contexto (tokens del modelo) en Ollama
-NUM_PREDICT           = 9000            # tokens de salida máximos
+NUM_CTX               = MODEL_CONFIGS["Qwen 8B (Ollama)"]["num_ctx"]      # contexto (tokens del modelo) en Ollama
+NUM_PREDICT           = MODEL_CONFIGS["Qwen 8B (Ollama)"]["num_predict"]  # tokens de salida máximos
 
 # Flag de debug para ver longitudes en consola
 DEBUG_PIPELINE        = True
 
-# Marcador de nueva sección por bloque
+# Marcador de nueva sección por bloque (para ayudar al modelo)
 SECTION_MARKER        = "---Sección Intermedia---"
+
+# Regex para encabezados de secciones en el texto
+SECTION_HEADER_REGEX = re.compile(
+    r"(?m)^---\s*Secci[oó]n\s+(\d+)\s*---\s*$"
+)
 
 # ====== PROMPT 1: extraer datos del encabezado ======
 PROMPT1_TEMPLATE = (
@@ -104,7 +126,7 @@ Instrucciones obligatorias:
 
 3) NO modifiques ningún otro número que no esté claramente asociado a carga viral.
 4) Si en el texto NO hay ninguna mención de carga viral, devuelve el texto ORIGINAL sin ningún cambio.
-5) No agregues comentarios, explicaciones ni notas adicionales. Devuelve exclusivamente el texto procesado.
+5) Devuelve ÚNICAMENTE el documento censurado (o el original si no hay cambios), sin explicaciones ni notas adicionales.
 
 Texto a procesar:
 {text}
@@ -133,7 +155,7 @@ Instrucciones obligatorias:
     [CENSURADO]
 
 2) Si identificas cualquier nombre o apellido en el texto, cambialo por [CENSURADO]. Ejemplos: Juan Perez → [CENSURADO], Rodriguez → [CENSURADO], Dr. Benitez → [CENSURADO].
-3) No agregues comentarios, explicaciones ni encabezados adicionales. Devuelve exclusivamente el texto transformado (o el original si no hay cambios).
+3) Devuelve ÚNICAMENTE el documento censurado (o el original si no hay cambios), sin explicaciones ni notas adicionales.
 
 Texto a procesar:
 {text}
@@ -297,6 +319,47 @@ def merge_pdfs(pdf_paths: List[str]) -> bytes:
     merged_bytes = out_doc.tobytes()
     out_doc.close()
     return merged_bytes
+
+# ---- Split del texto completo en secciones ----
+def split_text_into_sections(text: str) -> List[Tuple[int, str]]:
+    """
+    Divide el texto completo en una lista de tuplas (numero_seccion, texto_de_la_seccion).
+
+    Los encabezados esperados son líneas tipo:
+        --- Sección 0 ---
+        --- Seccion 1 ---
+    (con o sin tilde en 'ó').
+
+    Si no se encuentra ninguna sección, devuelve una sola "sección" 0 con todo el texto.
+    También, si hay texto antes de la primera sección, se agrega como sección -1 (si no está vacío).
+    """
+    matches = list(SECTION_HEADER_REGEX.finditer(text))
+    if not matches:
+        # No hay encabezados: todo es una sola sección 0
+        return [(0, text)]
+
+    sections: List[Tuple[int, str]] = []
+
+    # Texto antes de la primera sección
+    first_start = matches[0].start()
+    preamble = text[:first_start].strip()
+    if preamble:
+        sections.append((-1, preamble))  # sección "especial" que nunca se procesa
+
+    for i, m in enumerate(matches):
+        sec_num_str = m.group(1)
+        sec_num = int(sec_num_str)
+        start = m.start()
+        # Hasta el inicio del siguiente encabezado o fin de texto
+        if i + 1 < len(matches):
+            end = matches[i + 1].start()
+        else:
+            end = len(text)
+
+        full_section_text = text[start:end].strip("\n")
+        sections.append((sec_num, full_section_text))
+
+    return sections
 
 # =======================================
 # ---- Helpers Prompt 1 ----
@@ -527,76 +590,143 @@ def process_block_full(block_text: str, patient_data_list: List[str]) -> str:
     return final_text
 
 # =======================================
-# ---- CORE: PDF → PDF final usando 1 etapa por bloque ----
+# ---- CORE: PDF → PDF final usando 1 etapa por bloque (por SECCIONES) ----
 def full_pipeline_pdf_pages_to_merged_pdf(
     pages_text: List[str],
     patient_data_list: List[str],
-    pages_per_block: int = PAGES_PER_BLOCK,
+    sections_per_block: int = SECTIONS_PER_BLOCK,
+    section_start: Optional[int] = None,
+    section_end: Optional[int] = None,
     progress_callback: Optional[Callable[[int, int], None]] = None,
     tempdir_callback: Optional[Callable[[str], None]] = None,
 ) -> bytes:
     """
-    Para cada bloque de páginas:
-      1) Une las páginas en texto.
-      2) Agrega el marcador ---Sección Intermedia--- al inicio del bloque.
-      3) Etapa única (Prompt 2 + Prompt 5 + Prompt 3) → texto_final.
-      4) Elimina todas las ocurrencias de ---Sección Intermedia---.
-      5) texto_final limpio → PDF de bloque (guardado en carpeta temporal).
-    Al final, se unen todos los PDFs finales y se borra la carpeta temporal.
+    Nuevo comportamiento:
+    - Se une el texto de todas las páginas.
+    - Se divide en secciones usando encabezados tipo '--- Sección N ---'.
+    - Se define un rango [section_start, section_end] de secciones a procesar.
+    - Solo esas secciones se pasan por el pipeline (P2+P5+P3) en bloques de `sections_per_block`.
+    - El resto de las secciones se copia tal cual (sin procesar).
+    - Cada bloque (procesado o crudo) se convierte a un PDF parcial; al final se unen todos.
     """
-    num_pages = len(pages_text)
-    if num_pages == 0:
+    full_text = "\n".join(pages_text).strip()
+    if not full_text:
         return b""
 
-    temp_dir = tempfile.mkdtemp(prefix="anon_blocks_")
+    sections = split_text_into_sections(full_text)  # List[(sec_id, sec_text)]
 
+    # Determinar rango por defecto si no se especifica
+    section_ids = [sid for sid, _ in sections if sid >= 0]
+    if section_ids:
+        min_sec = min(section_ids)
+        max_sec = max(section_ids)
+    else:
+        min_sec = 0
+        max_sec = 0
+
+    if section_start is None:
+        section_start = min_sec
+    if section_end is None:
+        section_end = max_sec
+
+    # Set de secciones que vamos a procesar
+    sections_to_process = {
+        sid for sid in section_ids if section_start <= sid <= section_end
+    }
+
+    # Construimos "chunks" de texto:
+    #   - Chunks procesables: hasta `sections_per_block` secciones consecutivas dentro del rango.
+    #   - Chunks crudos: secciones fuera del rango, tal cual.
+    chunks: List[Tuple[str, bool]] = []  # (texto, debe_procesarse)
+    buffer: List[str] = []               # para agrupar secciones procesables
+    buffer_count = 0
+
+    def flush_buffer():
+        nonlocal buffer, buffer_count
+        if buffer:
+            block_text = "\n".join(buffer).strip()
+            if block_text:
+                chunks.append((block_text, True))
+        buffer = []
+        buffer_count = 0
+
+    for sid, sec_text in sections:
+        in_range = (sid in sections_to_process) if sid >= 0 else False
+
+        if not in_range:
+            # Si hay un bloque procesable pendiente, lo cerramos
+            flush_buffer()
+            # Esta sección se agrega cruda
+            if sec_text.strip():
+                chunks.append((sec_text.strip(), False))
+        else:
+            # Sección dentro del rango a procesar
+            buffer.append(sec_text.strip())
+            buffer_count += 1
+            if buffer_count >= sections_per_block:
+                flush_buffer()
+
+    # Si quedó un bloque procesable pendiente al final
+    flush_buffer()
+
+    # Si por alguna razón no hay chunks (texto vacío), devolvemos vacío
+    if not chunks:
+        return b""
+
+    # Contar cuantos bloques realmente van a pasar por el modelo (para la barra de progreso)
+    total_blocks_to_process = sum(1 for _, do_proc in chunks if do_proc)
+
+    temp_dir = tempfile.mkdtemp(prefix="anon_sections_")
     if tempdir_callback is not None:
         tempdir_callback(temp_dir)
 
     final_block_paths: List[str] = []
 
     try:
-        blocks = []
-        for start in range(0, num_pages, pages_per_block):
-            end = min(start + pages_per_block, num_pages)
-            blocks.append((start, end))
+        processed_blocks = 0
 
-        total_blocks = len(blocks)
+        for idx, (chunk_text, do_process) in enumerate(chunks, start=1):
+            if do_process:
+                # Bloque que va por el pipeline
+                if DEBUG_PIPELINE:
+                    print(f"\n### Procesando bloque de secciones (chunk #{idx}) ###")
+                    print("LEN chunk original:", len(chunk_text))
 
-        for block_idx, (start_idx, end_idx) in enumerate(blocks, start=1):
-            block_pages = pages_text[start_idx:end_idx]
-            block_text = "\n".join(block_pages).strip()
+                # 1) Agregar marcador de nueva sección al inicio del bloque
+                block_text_with_marker = add_section_marker(chunk_text)
 
-            # 1) Agregar marcador de nueva sección al inicio del bloque
-            block_text_with_marker = add_section_marker(block_text)
+                # 2) Procesar el bloque completo (P2 + P5 + P3)
+                block_result_text = process_block_full(block_text_with_marker, patient_data_list)
 
-            # 2) Procesar el bloque completo (P2 + P5 + P3)
-            block_result_text = process_block_full(block_text_with_marker, patient_data_list)
+                # 3) Eliminar el marcador ---Sección Intermedia--- antes de guardar
+                block_result_text_clean = remove_section_marker(block_result_text)
 
-            # 3) Eliminar el marcador ---Sección Intermedia--- antes de guardar
-            block_result_text_clean = remove_section_marker(block_result_text)
+                # 4) Convertir a PDF
+                block_pdf_bytes = text_to_pdf_bytes(block_result_text_clean)
 
-            # 4) Convertir a PDF
-            block_pdf_bytes = text_to_pdf_bytes(block_result_text_clean)
+                processed_blocks += 1
+                if progress_callback is not None and total_blocks_to_process > 0:
+                    progress_callback(processed_blocks, total_blocks_to_process)
+            else:
+                # Bloque crudo (fuera de rango), sin pasar por el modelo
+                if DEBUG_PIPELINE:
+                    print(f"\n### Bloque sin procesar (chunk #{idx}) ###")
+                    print("LEN chunk original:", len(chunk_text))
 
-            block_filename = f"block_{block_idx:04d}.pdf"
+                block_pdf_bytes = text_to_pdf_bytes(chunk_text)
+
+            block_filename = f"block_{idx:04d}.pdf"
             block_path = os.path.join(temp_dir, block_filename)
             with open(block_path, "wb") as f:
                 f.write(block_pdf_bytes)
 
             final_block_paths.append(block_path)
 
-            # Liberar memoria de este bloque
-            del block_pages
-            del block_text
-            del block_text_with_marker
-            del block_result_text
-            del block_result_text_clean
+            # Liberar memoria de este chunk
             del block_pdf_bytes
+            del chunk_text
 
-            if progress_callback is not None:
-                progress_callback(block_idx, total_blocks)
-
+        # Unir todos los PDFs (procesados + crudos)
         merged_pdf_bytes = merge_pdfs(sorted(final_block_paths))
         return merged_pdf_bytes
 
@@ -609,8 +739,29 @@ def full_pipeline_pdf_pages_to_merged_pdf(
 # =======================================
 # ---- UI Streamlit ----
 def main():
-    st.set_page_config(page_title="PDF → 🧠 Qwen 8B (Ollama)", layout="centered")
-    st.title("📄 PDF → 🧠 Qwen 8B (Ollama)")
+    global MODEL_NAME, TEMPERATURE, NUM_CTX, NUM_PREDICT  # para poder pisar los globales según la selección
+
+    st.set_page_config(page_title="PDF → 🧠 Anonimización con LLM (Ollama)", layout="centered")
+    st.title("📄 PDF → 🧠 Anonimización con LLM (Ollama)")
+
+    # ==== Selector de modelo ====
+    model_label = st.selectbox(
+        "Elegí el modelo a utilizar",
+        list(MODEL_CONFIGS.keys()),
+        index=0,
+    )
+    cfg = MODEL_CONFIGS[model_label]
+
+    # Actualizar parámetros globales en base al modelo elegido
+    MODEL_NAME  = cfg["model_name"]
+    TEMPERATURE = cfg["temperature"]
+    NUM_CTX     = cfg["num_ctx"]
+    NUM_PREDICT = cfg["num_predict"]
+
+    st.caption(
+        f"Modelo seleccionado: **{model_label}** "
+        f"(id: `{MODEL_NAME}`, temperatura: {TEMPERATURE}, num_ctx: {NUM_CTX}, num_predict: {NUM_PREDICT})"
+    )
 
     uploaded = st.file_uploader("Subí un PDF", type=["pdf"])
 
@@ -626,19 +777,55 @@ def main():
         num_pages = len(pages_text)
         full_text = "\n".join(pages_text).strip()
 
+        # Dividir en secciones para mostrar info y permitir elegir rango
+        sections = split_text_into_sections(full_text)
+        section_ids = [sid for sid, _ in sections if sid >= 0]
+        if section_ids:
+            min_sec = min(section_ids)
+            max_sec = max(section_ids)
+        else:
+            min_sec = 0
+            max_sec = 0
+
         st.success(f"PDF leído correctamente. Páginas detectadas: {num_pages}")
         st.caption(
             f"Caracteres extraídos (total): {len(full_text)} | "
             f"chunk: {MAX_CHARS_PER_CHUNK} | overlap: {OVERLAP} | "
-            f"bloque de páginas: {PAGES_PER_BLOCK}"
+            f"bloque de secciones: {SECTIONS_PER_BLOCK}"
         )
+        st.caption(
+            f"Secciones detectadas: {len([sid for sid in section_ids])} "
+            f"(rango numérico: {min_sec}–{max_sec})"
+        )
+
         st.text_area(
             "Vista previa del texto (primeras páginas)",
             value=full_text[:2000] + ("..." if len(full_text) > 2000 else ""),
             height=200,
         )
 
-        if st.button("🚀 Ejecutar modelo (P1 + (P2+P5+P3-redondeo-CV) en 1 etapa)"):
+        # Controles para elegir qué secciones procesar
+        start_section = st.number_input(
+            "Sección inicial a procesar",
+            min_value=int(min_sec),
+            max_value=int(max_sec),
+            value=int(min_sec),
+            step=1,
+        )
+        end_section = st.number_input(
+            "Sección final a procesar",
+            min_value=int(start_section),
+            max_value=int(max_sec),
+            value=int(max_sec),
+            step=1,
+        )
+        st.caption(
+            f"Se procesarán solo las secciones desde la {start_section} hasta la {end_section} "
+            f"en bloques de {SECTIONS_PER_BLOCK} secciones."
+        )
+
+        if st.button("🚀 Ejecutar modelo (P1 + (P2+P5+P3-redondeo-CV) en 1 etapa por bloque de SECCIONES)"):
+            # Paso 1: Prompt 1 para extraer datos del encabezado (se mantiene sobre las primeras páginas)
             with st.spinner("Paso 1: ejecutando Prompt 1 (extraer datos del encabezado)..."):
                 try:
                     result_prompt_1, raw_list, patient_data_list = extract_patient_data_chain(
@@ -663,20 +850,22 @@ def main():
                 pct = int(current_block / total_blocks * 100)
                 progress_bar.progress(pct)
                 status_placeholder.write(
-                    f"Procesando bloque {current_block} de {total_blocks} (1 etapa por bloque)..."
+                    f"Procesando bloque {current_block} de {total_blocks} (1 etapa por bloque de SECCIONES)..."
                 )
 
             def tempdir_cb(path: str) -> None:
                 tempdir_placeholder.caption(f"Carpeta temporal usada: {path}")
 
             with st.spinner(
-                "Procesando bloques en 1 etapa: (P2+P5+P3 con redondeo de carga viral)..."
+                "Procesando bloques en 1 etapa: (P2+P5+P3 con redondeo de carga viral, por secciones)..."
             ):
                 try:
                     final_pdf_bytes = full_pipeline_pdf_pages_to_merged_pdf(
                         pages_text,
                         patient_data_list=patient_data_list,
-                        pages_per_block=PAGES_PER_BLOCK,
+                        sections_per_block=SECTIONS_PER_BLOCK,
+                        section_start=int(start_section),
+                        section_end=int(end_section),
                         progress_callback=progress_cb,
                         tempdir_callback=tempdir_cb,
                     )
@@ -700,7 +889,7 @@ def main():
                     mime="application/pdf",
                 )
                 st.success(
-                    "¡Listo! Se ejecutó el pipeline completo en 1 etapa por bloque y se generó el PDF anonimizado ✅"
+                    "¡Listo! Se ejecutó el pipeline completo en 1 etapa por bloque de secciones y se generó el PDF anonimizado ✅"
                 )
 
     else:
