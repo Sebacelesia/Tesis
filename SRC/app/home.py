@@ -15,39 +15,63 @@ from datetime import datetime, date
 
 # ====== CONFIGURACIONES DE MODELOS ======
 # Ajustá los nombres de modelo ("model_name") según cómo los tengas en Ollama.
+# Acá también se definen los hiperparámetros de decodificación por defecto.
 MODEL_CONFIGS = {
     "Qwen 8B (Ollama)": {
-        "model_name":  "qwen3:8b",
-        "temperature": 0.0,
-        "num_ctx":     16384,
-        "num_predict": 9000,
+        "model_name":       "qwen3:8b",
+        "temperature":      0.0,
+        "num_ctx":          16384,
+        "num_predict":      9000,
+        "top_p":            0.95,
+        "top_k":            20,
+        "repeat_penalty":   1.1,
+        "repeat_last_n":    256,
+        "presence_penalty": 0.5,
+        "use_think_trunc":  True,   # cortar en /think
     },
-    "GPT 20B (Ollama)": {
-        "model_name":  "gpt-oss:20b",   # <-- CAMBIÁ ESTE NOMBRE AL QUE USES EN OLLAMA
-        "temperature": 0.0,
-        "num_ctx":     25000,           # ejemplo: más contexto para el modelo grande
-        "num_predict": 9000,
+    "Qwen 4B (Ollama)": {
+        "model_name":       "qwen3:4b",   # <-- CAMBIÁ ESTE NOMBRE AL QUE USES EN OLLAMA
+        "temperature":      0.0,
+        "num_ctx":          12000,           # más contexto para el modelo grande
+        "num_predict":      6000,
+        "top_p":            0.95,
+        "top_k":            20,
+        "repeat_penalty":   1.1,
+        "repeat_last_n":    256,
+        "presence_penalty": 0.0,
+        "use_think_trunc":  True,
     },
 }
 
 # ====== PARÁMETROS FIJOS (se inicializan con Qwen 8B y luego se pisan según la selección en la UI) ======
 OLLAMA_ENDPOINT = "http://localhost:11434"
-MODEL_NAME      = MODEL_CONFIGS["Qwen 8B (Ollama)"]["model_name"]
-TEMPERATURE     = MODEL_CONFIGS["Qwen 8B (Ollama)"]["temperature"]
+
+# Tomamos como base la config de Qwen 8B
+_DEFAULT_CFG = MODEL_CONFIGS["Qwen 8B (Ollama)"]
+MODEL_NAME      = _DEFAULT_CFG["model_name"]
+TEMPERATURE     = _DEFAULT_CFG["temperature"]
 
 USE_CHUNKING          = True            # si el texto supera MAX_CHARS_PER_CHUNK, se parte
 MAX_CHARS_PER_CHUNK   = 15000           # caracteres por chunk de texto (del documento)
 OVERLAP               = 0               # solapamiento entre chunks (en caracteres)
 
 # Procesar de a N secciones por bloque lógico
-SECTIONS_PER_BLOCK    = 3               # secciones por bloque
+SECTIONS_PER_BLOCK    = 1               # secciones por bloque
 
 # Importante para evitar cortes por contexto/salida en Ollama:
-NUM_CTX               = MODEL_CONFIGS["Qwen 8B (Ollama)"]["num_ctx"]      # contexto (tokens del modelo) en Ollama
-NUM_PREDICT           = MODEL_CONFIGS["Qwen 8B (Ollama)"]["num_predict"]  # tokens de salida máximos
+NUM_CTX               = _DEFAULT_CFG["num_ctx"]      # contexto (tokens del modelo) en Ollama
+NUM_PREDICT           = _DEFAULT_CFG["num_predict"]  # tokens de salida máximos
 
 # Flag de debug para ver longitudes en consola
 DEBUG_PIPELINE        = True
+
+# ====== Parámetros de decodificación adicionales (se pisan según el modelo elegido) ======
+TOP_P              = _DEFAULT_CFG["top_p"]
+TOP_K              = _DEFAULT_CFG["top_k"]
+REPEAT_PENALTY     = _DEFAULT_CFG["repeat_penalty"]
+REPEAT_LAST_N      = _DEFAULT_CFG["repeat_last_n"]
+PRESENCE_PENALTY   = _DEFAULT_CFG["presence_penalty"]
+USE_THINK_TRUNC    = _DEFAULT_CFG["use_think_trunc"]
 
 # Regex para encabezados de secciones en el texto
 SECTION_HEADER_REGEX = re.compile(
@@ -100,7 +124,7 @@ A continuación te comparto el documento:
 PROMPT3_TEMPLATE = """
 Eres un especialista en análisis de textos clínicos en español.
 
-Tu tarea es identificar TODAS las menciones de carga viral en el texto y reemplazar el número por un intervalo como se muestra a continuacion.
+Tu tarea es identificar TODAS las menciones de carga viral en el texto y reemplazar el número por un numero como se muestra a continuacion.
 
 Instrucciones obligatorias:
 1) Considera como mención de carga viral expresiones en las que aparezcan términos como
@@ -210,12 +234,14 @@ def ollama_generate(
     options: Optional[dict] = None,
 ) -> str:
     base_opts = {
-        "temperature":    temperature,
-        "num_ctx":        NUM_CTX,
-        "num_predict":    NUM_PREDICT,
-        # ==== Parámetros para penalizar repetición ====
-        "repeat_penalty": 1.1,   # >1 penaliza repetir tokens
-        "repeat_last_n":  256,   # mira las últimas N tokens para penalizar
+        "temperature":      temperature,
+        "num_ctx":          NUM_CTX,
+        "num_predict":      NUM_PREDICT,
+        "top_p":            TOP_P,
+        "top_k":            TOP_K,
+        "repeat_penalty":   REPEAT_PENALTY,   # >1 penaliza repetir tokens
+        "repeat_last_n":    REPEAT_LAST_N,    # mira las últimas N tokens para penalizar
+        "presence_penalty": PRESENCE_PENALTY,
     }
     if options:
         base_opts.update(options)
@@ -251,6 +277,17 @@ def strip_think_segment(text: str) -> str:
     if idx == -1:
         return text.strip()
     return text[:idx].rstrip()
+
+def maybe_strip_think(text: str) -> str:
+    """
+    Aplica strip_think_segment solo si USE_THINK_TRUNC es True.
+    Si no, simplemente hace strip().
+    """
+    if text is None:
+        text = ""
+    if USE_THINK_TRUNC:
+        return strip_think_segment(text)
+    return text.strip()
 
 # ---- Chunking por caracteres (solo el TEXTO, no el template) ----
 def chunk_text_by_chars(text: str, max_chars: int, overlap: int) -> List[str]:
@@ -410,6 +447,31 @@ def map_section_ids_to_dates(sections: List[Tuple[int, str]]):
 
     return section_dates, all_dates
 
+# ================ NUEVO: normalizar signos de puntuación en cada elemento =================
+def normalize_punctuation_in_list(seq: List[str]) -> List[str]:
+    """
+    Para cada elemento:
+      - Reemplaza , . : ; por un espacio.
+      - Colapsa espacios múltiples.
+      - Aplica strip().
+      - Descarta strings vacíos.
+
+    Ejemplo:
+      ["Sebastian, celesia", ",", "Montevideo; 123"]
+        → ["Sebastian Celesia", "Montevideo 123"]
+    """
+    cleaned: List[str] = []
+    for elem in seq:
+        s = str(elem)
+        # Reemplazar , . : ; por espacio
+        s = re.sub(r"[,\.;:]", " ", s)
+        # Colapsar espacios múltiples
+        s = re.sub(r"\s+", " ", s)
+        s = s.strip()
+        if s:
+            cleaned.append(s)
+    return cleaned
+
 # =======================================
 # ---- Helpers Prompt 1 ----
 def run_prompt1_on_first_pages(
@@ -426,9 +488,8 @@ def run_prompt1_on_first_pages(
         endpoint=OLLAMA_ENDPOINT,
         temperature=TEMPERATURE,
     )
-    # IMPORTANTE: Prompt 1 se devuelve sin strip_think_segment
+    # IMPORTANTE: Prompt 1 se devuelve sin maybe_strip_think para no romper el parseo de la lista
     return out.strip()
-
 
 def parse_llm_list(text: str) -> List[str]:
     t = text.strip()
@@ -443,14 +504,13 @@ def parse_llm_list(text: str) -> List[str]:
         import ast
         return ast.literal_eval(t)
 
-
 def postprocess_patient_data(raw_list: List[str]) -> List[str]:
     """
-    Ejemplos de entrada:
+    Ejemplos de entrada ideal:
       ["BENGELO RAKOTO MOHAMUD", "AA 6723.098-0", "ABUBAKAR 431"]
 
-    Salida:
-      ["BENGELO", "RAKOTO", "MOHAMUD", "AA67230980", "ABUBAKAR 431"]
+    Asume que raw_list ya viene con la puntuación normalizada
+    (sin comas/puntos/;/: sueltos, y con espacios bien colocados).
     """
     if len(raw_list) < 3:
         raise ValueError(
@@ -468,18 +528,27 @@ def postprocess_patient_data(raw_list: List[str]) -> List[str]:
 
     return [*name_parts, clean_doc, address]
 
-
 def extract_patient_data_chain(pages_text: List[str]) -> Tuple[str, List[str], List[str]]:
     """
     Ejecuta todo Prompt 1:
       - corre el modelo sobre las 2 primeras páginas,
       - parsea la lista,
+      - normaliza signos de puntuación en cada elemento,
       - la postprocesa.
     """
     result_prompt_1 = run_prompt1_on_first_pages(pages_text, n_pages=2)
+
+    # 1) String → lista python (cruda)
     raw_list = parse_llm_list(result_prompt_1)
-    processed_list = postprocess_patient_data(raw_list)
-    return result_prompt_1, raw_list, processed_list
+
+    # 2) 🔧 Normalizar puntuación dentro de cada elemento
+    raw_list_clean = normalize_punctuation_in_list(raw_list)
+
+    # 3) Postproceso (usa la lista limpia)
+    processed_list = postprocess_patient_data(raw_list_clean)
+
+    # Devolvemos la lista limpia para mostrar en UI
+    return result_prompt_1, raw_list_clean, processed_list
 
 # =======================================
 # ---- Prompt 2: censurar un bloque usando la lista ----
@@ -500,8 +569,7 @@ def censor_block_text(block_text: str, patient_data_list: List[str]) -> str:
                 endpoint=OLLAMA_ENDPOINT,
                 temperature=TEMPERATURE,
             )
-            # Cortar en el primer /think (si lo hay)
-            out = strip_think_segment(out)
+            out = maybe_strip_think(out)
             out_parts.append(out)
         return "\n\n".join([p for p in out_parts if p.strip()]).strip()
     else:
@@ -512,8 +580,7 @@ def censor_block_text(block_text: str, patient_data_list: List[str]) -> str:
             endpoint=OLLAMA_ENDPOINT,
             temperature=TEMPERATURE,
         )
-        # Cortar en el primer /think (si lo hay)
-        out = strip_think_segment(out)
+        out = maybe_strip_think(out)
         return out
 
 # =======================================
@@ -533,8 +600,7 @@ def tag_cv_in_block_text(block_text: str) -> str:
                 endpoint=OLLAMA_ENDPOINT,
                 temperature=TEMPERATURE,
             )
-            # Cortar en el primer /think (si lo hay)
-            out = strip_think_segment(out)
+            out = maybe_strip_think(out)
             out_parts.append(out)
         return "\n\n".join([p for p in out_parts if p.strip()]).strip()
     else:
@@ -545,8 +611,7 @@ def tag_cv_in_block_text(block_text: str) -> str:
             endpoint=OLLAMA_ENDPOINT,
             temperature=TEMPERATURE,
         )
-        # Cortar en el primer /think (si lo hay)
-        out = strip_think_segment(out)
+        out = maybe_strip_think(out)
         return out
 
 # =======================================
@@ -570,8 +635,7 @@ def responsables_block_text(block_text: str) -> str:
                 endpoint=OLLAMA_ENDPOINT,
                 temperature=TEMPERATURE,
             )
-            # Cortar en el primer /think (si lo hay)
-            out = strip_think_segment(out)
+            out = maybe_strip_think(out)
             out_parts.append(out)
         return "\n\n".join([p for p in out_parts if p.strip()]).strip()
     else:
@@ -582,8 +646,7 @@ def responsables_block_text(block_text: str) -> str:
             endpoint=OLLAMA_ENDPOINT,
             temperature=TEMPERATURE,
         )
-        # Cortar en el primer /think (si lo hay)
-        out = strip_think_segment(out)
+        out = maybe_strip_think(out)
         return out
 
 # =======================================
@@ -648,7 +711,8 @@ def full_pipeline_pdf_pages_to_merged_pdf(
     end_date: Optional[date] = None,
     progress_callback: Optional[Callable[[int, int], None]] = None,
     tempdir_callback: Optional[Callable[[str], None]] = None,
-) -> bytes:
+    warnings_collector: Optional[List[str]] = None,
+) -> Tuple[bytes, List[str]]:
     """
     Nuevo comportamiento:
     - Se construye un texto seccionado a partir de las páginas (por 'Fecha:', secciones 1..N).
@@ -657,10 +721,19 @@ def full_pipeline_pdf_pages_to_merged_pdf(
     - Se procesan SOLO las secciones cuya fecha esté entre [start_date, end_date] (inclusive),
       y SIEMPRE se incluye la sección 1 si existe.
     - Si ninguna sección tiene fecha detectable, se ignora el filtro y se procesan todas.
+
+    NUEVO:
+    - Si a nivel de bloque se pierde más de 150 caracteres respecto al original, se reintenta
+      procesar ese bloque sección por sección.
+    - A nivel de sección, si se pierden más de 250 caracteres, se deja la sección original
+      y se agrega un warning al collector.
     """
+    if warnings_collector is None:
+        warnings_collector = []
+
     full_text = build_sectioned_text_from_pages(pages_text)
     if not full_text:
-        return b""
+        return b"", warnings_collector
 
     sections = split_text_into_sections(full_text)  # List[(sec_id, sec_text)]
     section_ids = [sid for sid, _ in sections if sid >= 0]
@@ -697,28 +770,25 @@ def full_pipeline_pdf_pages_to_merged_pdf(
 
     # Si no hay secciones para procesar, devolvemos vacío
     if not sections_to_use:
-        return b""
+        return b"", warnings_collector
 
     # Construimos bloques de hasta `sections_per_block` secciones consecutivas (en orden lógico)
-    chunks: List[str] = []
-    buffer: List[str] = []
+    # Ahora guardamos también el id de la sección para poder loguear warnings.
+    chunks: List[List[Tuple[int, str]]] = []
+    buffer: List[Tuple[int, str]] = []
 
-    for _, sec_text in sections_to_use:
-        buffer.append(sec_text)
+    for sid, sec_text in sections_to_use:
+        buffer.append((sid, sec_text))
         if len(buffer) >= sections_per_block:
-            block_text = "\n".join(buffer).strip()
-            if block_text:
-                chunks.append(block_text)
+            chunks.append(buffer)
             buffer = []
 
     # Bloque final si quedó algo pendiente
     if buffer:
-        block_text = "\n".join(buffer).strip()
-        if block_text:
-            chunks.append(block_text)
+        chunks.append(buffer)
 
     if not chunks:
-        return b""
+        return b"", warnings_collector
 
     total_blocks_to_process = len(chunks)
 
@@ -731,13 +801,74 @@ def full_pipeline_pdf_pages_to_merged_pdf(
     try:
         processed_blocks = 0
 
-        for idx, chunk_text in enumerate(chunks, start=1):
+        for idx, section_block in enumerate(chunks, start=1):
+            # Texto original del bloque: concatenación de las secciones
+            block_text = "\n".join(sec_text for _, sec_text in section_block).strip()
             if DEBUG_PIPELINE:
                 print(f"\n### Procesando bloque de secciones (chunk #{idx}) ###")
-                print("LEN chunk original:", len(chunk_text))
+                print("LEN chunk original:", len(block_text))
 
-            block_result_text = process_block_full(chunk_text, patient_data_list)
+            # Procesar bloque completo
+            block_result_text = process_block_full(block_text, patient_data_list)
 
+            # CONTROL DE LONGITUD A NIVEL BLOQUE
+            len_orig_block = len(block_text)
+            len_res_block  = len(block_result_text)
+            diff_block     = len_orig_block - len_res_block
+
+            if DEBUG_PIPELINE:
+                print(
+                    f"[BLOQUE #{idx}] len_orig={len_orig_block}, "
+                    f"len_res={len_res_block}, diff={diff_block}"
+                )
+
+            # Si el resultado recorta MÁS de 150 caracteres → fallback por sección
+            if diff_block > 150:
+                if DEBUG_PIPELINE:
+                    print(
+                        f"[BLOQUE #{idx}] Diferencia > 150 caracteres. "
+                        "Reprocesando sección por sección."
+                    )
+
+                per_section_outputs: List[str] = []
+                for sid, sec_text in section_block:
+                    sec_orig_len = len(sec_text)
+                    sec_result   = process_block_full(sec_text, patient_data_list)
+                    sec_result_stripped = sec_result.strip()
+
+                    if not sec_result_stripped:
+                        # Si queda vacío, claramente es riesgoso → mantener original
+                        diff_sec = sec_orig_len
+                    else:
+                        diff_sec = sec_orig_len - len(sec_result_stripped)
+
+                    if DEBUG_PIPELINE:
+                        print(
+                            f"  - Sección {sid}: len_orig={sec_orig_len}, "
+                            f"len_res={len(sec_result_stripped)}, diff={diff_sec}"
+                        )
+
+                    # Si se pierden más de 250 chars a nivel sección → warning y usar original
+                    if diff_sec > 250:
+                        msg = (
+                            f"Sección {sid}: no se pudo anonimizar de forma segura "
+                            f"(diferencia de longitud {diff_sec}). "
+                            "Se dejó el texto original."
+                        )
+                        warnings_collector.append(msg)
+                        per_section_outputs.append(sec_text)
+                    else:
+                        # Si no hay diferencia excesiva y hay algo de texto, usamos el resultado
+                        if sec_result_stripped:
+                            per_section_outputs.append(sec_result_stripped)
+                        else:
+                            # En caso de duda, conservar original
+                            per_section_outputs.append(sec_text)
+
+                # Texto final del bloque después del fallback por sección
+                block_result_text = "\n".join(per_section_outputs).strip()
+
+            # Convertir texto final del bloque (sea del camino normal o del fallback) a PDF
             block_pdf_bytes = text_to_pdf_bytes(block_result_text)
 
             processed_blocks += 1
@@ -752,10 +883,11 @@ def full_pipeline_pdf_pages_to_merged_pdf(
             final_block_paths.append(block_path)
 
             del block_pdf_bytes
-            del chunk_text
+            del block_text
+            del block_result_text
 
         merged_pdf_bytes = merge_pdfs(sorted(final_block_paths))
-        return merged_pdf_bytes
+        return merged_pdf_bytes, warnings_collector
 
     finally:
         try:
@@ -766,7 +898,8 @@ def full_pipeline_pdf_pages_to_merged_pdf(
 # =======================================
 # ---- UI Streamlit ----
 def main():
-    global MODEL_NAME, TEMPERATURE, NUM_CTX, NUM_PREDICT  # para poder pisar los globales según la selección
+    global MODEL_NAME, TEMPERATURE, NUM_CTX, NUM_PREDICT
+    global TOP_P, TOP_K, REPEAT_PENALTY, REPEAT_LAST_N, PRESENCE_PENALTY, USE_THINK_TRUNC
 
     st.set_page_config(page_title="PDF → 🧠 Anonimización con LLM (Ollama)", layout="centered")
     st.title("📄 PDF → 🧠 Anonimización con LLM (Ollama)")
@@ -779,15 +912,33 @@ def main():
     )
     cfg = MODEL_CONFIGS[model_label]
 
-    # Actualizar parámetros globales en base al modelo elegido
-    MODEL_NAME  = cfg["model_name"]
-    TEMPERATURE = cfg["temperature"]
-    NUM_CTX     = cfg["num_ctx"]
-    NUM_PREDICT = cfg["num_predict"]
+    # Actualizar parámetros globales en base al modelo elegido (TODO en código, no en UI)
+    MODEL_NAME       = cfg["model_name"]
+    TEMPERATURE      = cfg["temperature"]
+    NUM_CTX          = cfg["num_ctx"]
+    NUM_PREDICT      = cfg["num_predict"]
+    TOP_P            = cfg["top_p"]
+    TOP_K            = cfg["top_k"]
+    REPEAT_PENALTY   = cfg["repeat_penalty"]
+    REPEAT_LAST_N    = cfg["repeat_last_n"]
+    PRESENCE_PENALTY = cfg["presence_penalty"]
+    USE_THINK_TRUNC  = cfg["use_think_trunc"]
 
     st.caption(
-        f"Modelo seleccionado: **{model_label}** "
-        f"(id: `{MODEL_NAME}`, temperatura: {TEMPERATURE}, num_ctx: {NUM_CTX}, num_predict: {NUM_PREDICT})"
+        "Modelo seleccionado: **{label}** (id: `{name}`, temp: {temp}, top_p: {top_p}, "
+        "top_k: {top_k}, num_ctx: {num_ctx}, num_predict: {num_pred}, "
+        "repeat_penalty: {rp}, presence_penalty: {pp}, think_trunc: {tt})".format(
+            label=model_label,
+            name=MODEL_NAME,
+            temp=TEMPERATURE,
+            top_p=TOP_P,
+            top_k=TOP_K,
+            num_ctx=NUM_CTX,
+            num_pred=NUM_PREDICT,
+            rp=REPEAT_PENALTY,
+            pp=PRESENCE_PENALTY,
+            tt="ON" if USE_THINK_TRUNC else "OFF",
+        )
     )
 
     uploaded = st.file_uploader("Subí un PDF", type=["pdf"])
@@ -883,11 +1034,13 @@ def main():
                     st.error(f"Error en Prompt 1: {e}")
                     st.stop()
 
+            # raw_list ya viene con "Sebastian, celesia" → "Sebastian Celesia", etc.
             st.session_state["prompt1_raw_response"] = result_prompt_1
             st.session_state["prompt1_raw_list"] = raw_list
             st.session_state["patient_data_list"] = patient_data_list
 
             st.success("Prompt 1 completado. Datos detectados:")
+            st.write("Lista cruda normalizada:", raw_list)
             st.write("Lista procesada (nombres, doc, dirección):", patient_data_list)
 
             progress_bar = st.progress(0)
@@ -909,7 +1062,7 @@ def main():
                 "Procesando bloques en 1 etapa: (P2+P5+P3 con redondeo de carga viral, filtrando por rango de fechas)..."
             ):
                 try:
-                    final_pdf_bytes = full_pipeline_pdf_pages_to_merged_pdf(
+                    final_pdf_bytes, warnings = full_pipeline_pdf_pages_to_merged_pdf(
                         pages_text,
                         patient_data_list=patient_data_list,
                         sections_per_block=SECTIONS_PER_BLOCK,
@@ -917,6 +1070,7 @@ def main():
                         end_date=end_date,
                         progress_callback=progress_cb,
                         tempdir_callback=tempdir_cb,
+                        warnings_collector=[],
                     )
                 except Exception as e:
                     st.error(f"Error durante el procesamiento por bloques: {e}")
@@ -924,6 +1078,14 @@ def main():
 
             progress_bar.progress(100)
             status_placeholder.write("Procesamiento completado ✅")
+
+            # Mostrar warnings de secciones no anonimizada de forma segura
+            if warnings:
+                st.warning(
+                    "Algunas secciones no se pudieron anonimizar de forma segura y se dejaron "
+                    "en su versión original:\n\n" +
+                    "\n".join(f"- {msg}" for msg in warnings)
+                )
 
             if not final_pdf_bytes:
                 st.warning(
