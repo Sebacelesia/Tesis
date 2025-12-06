@@ -27,12 +27,12 @@ MODEL_CONFIGS = {
         "repeat_penalty":   1.1,
         "repeat_last_n":    256,
         "presence_penalty": 0.5,
-        "use_think_trunc":  True,   # cortar en /think
+        "use_think_trunc":  True,   
     },
     "Qwen 4B (Ollama)": {
-        "model_name":       "qwen3:4b",   # <-- CAMBIÁ ESTE NOMBRE AL QUE USES EN OLLAMA
+        "model_name":       "qwen3:4b",   
         "temperature":      0.0,
-        "num_ctx":          12000,           # más contexto para el modelo grande
+        "num_ctx":          12000,           
         "num_predict":      6000,
         "top_p":            0.95,
         "top_k":            20,
@@ -167,8 +167,8 @@ Instrucciones obligatorias:
     Por ejemplo:
 
     Responsables del registro:
-    AE R. VILLANUEVA
-    LIC DOS SANTOS
+    AE. GARCIA
+    LIC. DEL PUERTO
 
     Pasaria a ser:
 
@@ -901,12 +901,12 @@ def main():
     global MODEL_NAME, TEMPERATURE, NUM_CTX, NUM_PREDICT
     global TOP_P, TOP_K, REPEAT_PENALTY, REPEAT_LAST_N, PRESENCE_PENALTY, USE_THINK_TRUNC
 
-    st.set_page_config(page_title="PDF → 🧠 Anonimización con LLM (Ollama)", layout="centered")
-    st.title("📄 PDF → 🧠 Anonimización con LLM (Ollama)")
+    st.set_page_config(page_title="Anonimización de PDFs", layout="centered")
+    st.title("Herramienta de anonimización de documentos")
 
     # ==== Selector de modelo ====
     model_label = st.selectbox(
-        "Elegí el modelo a utilizar",
+        "Elegir modelo",
         list(MODEL_CONFIGS.keys()),
         index=0,
     )
@@ -925,9 +925,7 @@ def main():
     USE_THINK_TRUNC  = cfg["use_think_trunc"]
 
     st.caption(
-        "Modelo seleccionado: **{label}** (id: `{name}`, temp: {temp}, top_p: {top_p}, "
-        "top_k: {top_k}, num_ctx: {num_ctx}, num_predict: {num_pred}, "
-        "repeat_penalty: {rp}, presence_penalty: {pp}, think_trunc: {tt})".format(
+        "Modelo seleccionado: **{label}**".format(
             label=model_label,
             name=MODEL_NAME,
             temp=TEMPERATURE,
@@ -941,7 +939,7 @@ def main():
         )
     )
 
-    uploaded = st.file_uploader("Subí un PDF", type=["pdf"])
+    uploaded = st.file_uploader("Cargar PDF", type=["pdf"])
 
     if uploaded is not None:
         pdf_bytes = uploaded.read()
@@ -965,13 +963,11 @@ def main():
 
         st.success(f"PDF leído correctamente. Páginas detectadas: {num_pages}")
         st.caption(
-            f"Caracteres extraídos (texto seccionado): {len(sectioned_text)} | "
-            f"chunk: {MAX_CHARS_PER_CHUNK} | overlap: {OVERLAP} | "
-            f"bloque de secciones: {SECTIONS_PER_BLOCK}"
+            f"Caracteres extraídos: {len(sectioned_text)} | "
+            f"Secciones por bloque: {SECTIONS_PER_BLOCK}"
         )
         st.caption(
             f"Secciones detectadas: {len(section_ids)}. "
-            f"La Sección 1 se incluirá SIEMPRE en el resultado."
         )
 
         if all_dates:
@@ -985,11 +981,10 @@ def main():
             min_date_found = max_date_found = None
             st.warning(
                 "No se detectaron fechas con formato dd/mm/aaaa en las secciones. "
-                "Si no especificás rango, se procesarán todas las secciones."
             )
 
         st.text_area(
-            "Vista previa del texto seccionado",
+            "Vista previa del documento",
             value=sectioned_text[:2000] + ("..." if len(sectioned_text) > 2000 else ""),
             height=200,
         )
@@ -1018,14 +1013,13 @@ def main():
             st.stop()
 
         st.caption(
-            "Se procesarán todas las secciones cuya fecha esté dentro del rango indicado "
-            "y, adicionalmente, la Sección 1 si existe. "
-            "Si ninguna sección tiene fecha detectable, se ignora el filtro y se procesan todas."
+            "Cargar historia clínica completa. "
+            "Se procesarán todas las secciones cuya fecha esté dentro del rango indicado. "
         )
 
-        if st.button("🚀 Ejecutar modelo (P1 + (P2+P5+P3-redondeo-CV) filtrando por rango de fechas)"):
+        if st.button("Procesar PDF"):
             # Paso 1: Prompt 1 (encabezado)
-            with st.spinner("Paso 1: ejecutando Prompt 1 (extraer datos del encabezado)..."):
+            with st.spinner("Extrayendo datos del encabezado..."):
                 try:
                     result_prompt_1, raw_list, patient_data_list = extract_patient_data_chain(
                         pages_text
@@ -1039,9 +1033,8 @@ def main():
             st.session_state["prompt1_raw_list"] = raw_list
             st.session_state["patient_data_list"] = patient_data_list
 
-            st.success("Prompt 1 completado. Datos detectados:")
-            st.write("Lista cruda normalizada:", raw_list)
-            st.write("Lista procesada (nombres, doc, dirección):", patient_data_list)
+            st.success("Prompt 1 completado.")
+            st.write("Datos detectados del paciente:", patient_data_list)
 
             progress_bar = st.progress(0)
             status_placeholder = st.empty()
@@ -1052,14 +1045,14 @@ def main():
                 progress_bar.progress(pct)
                 status_placeholder.write(
                     f"Procesando bloque {current_block} de {total_blocks} "
-                    f"(1 etapa por bloque, filtrado por rango de fechas)..."
+                    f"(Filtrado por rango de fechas)..."
                 )
 
             def tempdir_cb(path: str) -> None:
-                tempdir_placeholder.caption(f"Carpeta temporal usada: {path}")
+                tempdir_placeholder.caption(f"Carpeta temporal: {path}")
 
             with st.spinner(
-                "Procesando bloques en 1 etapa: (P2+P5+P3 con redondeo de carga viral, filtrando por rango de fechas)..."
+                "Procesando bloques..."
             ):
                 try:
                     final_pdf_bytes, warnings = full_pipeline_pdf_pages_to_merged_pdf(
@@ -1092,9 +1085,9 @@ def main():
                     "La salida está vacía. Revisá el PDF original o el rango de fechas indicado."
                 )
             else:
-                st.subheader("📄 Descarga")
+                st.subheader("Descarga")
                 st.download_button(
-                    "📥 Descargar PDF anonimizado",
+                    "Descargar PDF anonimizado",
                     data=io.BytesIO(final_pdf_bytes),
                     file_name="salida_ollama_anonimizada.pdf",
                     mime="application/pdf",
