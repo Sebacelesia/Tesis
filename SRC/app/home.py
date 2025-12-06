@@ -12,30 +12,31 @@ MODEL_NAME      = "qwen3:8b"
 TEMPERATURE     = 0.2
 
 USE_CHUNKING          = True           # si el texto supera MAX_CHARS_PER_CHUNK, se parte
-MAX_CHARS_PER_CHUNK   = 10000         # <- cambiá acá (p.ej., 10k)
-OVERLAP               = 0            # solapamiento entre chunks
+MAX_CHARS_PER_CHUNK   = 15000         # <- cambiá acá (p.ej., 10k)
+OVERLAP               = 10           # solapamiento entre chunks
 
 # Importante para evitar cortes por contexto/salida en Ollama:
 
 NUM_CTX               = 16384          # contexto (tokens) del modelo en Ollama
-NUM_PREDICT           = 25000           # tokens de salida máximos (subí si necesitás más)
+NUM_PREDICT           = 9000           # tokens de salida máximos (subí si necesitás más)
 
 DEFAULT_TEMPLATE = (
-    """Eres un asistente especializado en anonimizar historias clínicas en español.
+"""Eres un asistente especializado en anonimizar historias clínicas en español.
 
         INSTRUCCIONES OBLIGATORIAS
         1) Sustituye SOLO datos personales por estos placeholders exactos:
-        - Nombres y apellidos de personas (pacientes, familiares, médicos) → [NOMBRE]
-        - Teléfonos (cualquier formato, nacional o internacional) → [TELEFONO]
-        - Cédulas de identidad / documentos → [CI]
-        - Direcciones postales/domicilios (calle/avenida + número, esquinas, apto, barrio) → [DIRECCIÓN]
+        - Nombres y apellidos de personas de cualquier origen y en cualquier parte del documento (pacientes, familiares, médicos) → [CENSURADO]
+        - Teléfonos (cualquier formato, nacional o internacional) → [CENSURADO]
+        - Cédulas de identidad / documentos → [CENSURADO]
+        - Direcciones postales/domicilios (calle/avenida + número, esquinas, apto, barrio) → [CENSURADO]
         2) Conserva TODO lo demás sin cambios: síntomas, diagnósticos, dosis, resultados, unidades, abreviaturas, signos de puntuación, mayúsculas/minúsculas.
-        3) Si ya hay placeholders ([NOMBRE], [TELEFONO], [CI], [DIRECCIÓN]), NO los modifiques.
-        4) Títulos y roles: conserva el título y reemplaza solo el nombre. Ej.: “Dr. [NOMBRE]”, “Lic. [NOMBRE]”.
+        3) Si ya hay placeholders ([NOMBRE], [TELEFONO], [CI], [DIRECCIÓN], [CENSURADO]), NO los modifiques.
+        4) Títulos y roles: conserva el título y reemplaza solo el nombre. Ej.: “Dr. [CENSURADO]”, “Lic. [CENSURADO]”.
         5) Teléfonos: reemplaza secuencias de 7+ dígitos o con separadores (+598, -, espacios, paréntesis).
         6) Direcciones: incluye referencias claras de domicilio (calle/esquina/número/apto/barrio).
         7) No inventes datos, no agregues comentarios, no cambies el formato. Respeta saltos de línea y espacios originales.
         8) Devuelve ÚNICAMENTE el texto anonimizado, sin explicaciones ni encabezados.
+        9) NUNCA anonimices lo que aparece como Ciudad, Sexo o Edad. Es importante conservar esta información.
 
         Texto a anonimizar:
         {text}"""
