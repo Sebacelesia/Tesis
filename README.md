@@ -14,7 +14,7 @@ El sistema:
 
 ## 1. Requisitos previos
 
-- **Python** 3.10+ (recomendado 3.11).
+- **Python** 3.9 (recomendado usar específicamente 3.9).
 - **Ollama** instalado y funcionando en `http://localhost:11434`.
 - Sistema operativo con capacidad para ejecutar los modelos Qwen3 (idealmente con GPU).
 
@@ -33,9 +33,15 @@ Debés tenerlos descargados en tu máquina.
 
 ### 2.1. Crear y activar entorno virtual
 
+Si en tu máquina el comando `python` ya apunta a la 3.9, también podrías usar:
+
 ```bash
-# Crear entorno virtual (Windows)
 python -m venv .venv
 
-# Activar entorno
+```bash
+# Crear entorno virtual con Python 3.9 (Windows)
+py -3.9 -m venv .venv
+
+# Activar entorno (Windows)
 .venv\Scripts\activate
+
