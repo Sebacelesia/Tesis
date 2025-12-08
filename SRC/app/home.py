@@ -481,9 +481,7 @@ def normalize_punctuation_in_list(seq: List[str]) -> List[str]:
     cleaned: List[str] = []
     for elem in seq:
         s = str(elem)
-        # Reemplazar , . : ; por espacio
         s = re.sub(r"[,\.;:]", " ", s)
-        # Colapsar espacios múltiples
         s = re.sub(r"\s+", " ", s)
         s = s.strip()
         if s:
