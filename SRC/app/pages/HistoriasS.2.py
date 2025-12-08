@@ -10,7 +10,7 @@ from openai import OpenAI
 # Inicializar cliente OpenRouter
 client = OpenAI(
     base_url="https://openrouter.ai/api/v1",
-    api_key="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",  
+    api_key="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",  # ⚠️ usa secrets.toml o variable de entorno
 )
 
 # --- Interfaz Streamlit ---
