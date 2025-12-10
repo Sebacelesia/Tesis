@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 
-SRC_PATH = Path(__file__).resolve().parents[1] 
+SRC_PATH = Path(__file__).resolve().parents[1]
 if str(SRC_PATH) not in sys.path:
     sys.path.insert(0, str(SRC_PATH))
 
@@ -31,7 +31,6 @@ def main():
     st.set_page_config(page_title="Anonimización de PDFs", layout="centered")
     st.title("Herramienta de anonimización de documentos")
 
-    # -------- Selector de modelo --------
     model_label = st.selectbox(
         "Elegir modelo",
         list(MODEL_CONFIGS.keys()),
@@ -48,13 +47,24 @@ def main():
         st.info("Subí un PDF para comenzar.")
         return
 
+ 
+    filename = (uploaded.name or "").lower()
+    content_type = (getattr(uploaded, "type", "") or "").lower()
+
+    
+    if not filename.endswith(".pdf") or ("pdf" not in content_type and content_type != ""):
+        st.warning("El archivo cargado no parece ser un PDF válido.")
+        st.info("Por favor subí un archivo con extensión .pdf.")
+        return
+
     pdf_bytes = uploaded.read()
 
     with st.spinner("Extrayendo texto del PDF..."):
         try:
             pages_text = pdf_bytes_to_pages(pdf_bytes)
-        except Exception as e:
-            st.error(f"Error al leer el PDF: {e}")
+        except Exception:
+            st.warning("No se pudo leer el archivo como PDF.")
+            st.info("Verificá que el archivo no esté dañado y que sea un PDF válido.")
             st.stop()
 
     num_pages = len(pages_text)
@@ -124,7 +134,16 @@ def main():
                 result_prompt_1, raw_list, patient_data_list = extract_patient_data_chain(
                     pages_text
                 )
+           
+            except (SyntaxError, ValueError):
+                st.warning("No se pudieron extraer los datos del encabezado.")
+                st.info(
+                    "El modelo no devolvió una lista válida en el formato esperado. "
+                    "Probá nuevamente o verifica tener todas las librerias instaladas."
+                )
+                st.stop()
             except Exception as e:
+                
                 st.error(f"Error en Prompt 1: {e}")
                 st.stop()
 
