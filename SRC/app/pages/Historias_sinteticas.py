@@ -6,15 +6,10 @@ import random
 import textwrap
 import streamlit as st
 import google.generativeai as genai
-import fitz  # PyMuPDF
+import fitz 
 from pathlib import Path
 
 
-# =========================================================
-# PATHS / DATA
-# =========================================================
-# Este archivo está en: src/app/pages/Historias_sinteticas.py
-# ROOT = carpeta raíz del proyecto
 ROOT = Path(__file__).resolve().parents[3]
 
 CASOS_PATH = ROOT / "data_partesintetica" / "casos.json"
@@ -23,24 +18,12 @@ with CASOS_PATH.open("r", encoding="utf-8") as f:
     CASOS = json.load(f)
 
 
-# =========================================================
-# KEYS (recomendado usar variables de entorno)
-# =========================================================
-# En Windows PowerShell:
-#   $env:OPENROUTER_KEY="tu_key"
-#   $env:GEMINI_API_KEY="tu_key"
-#
-# En Linux/Mac:
-#   export OPENROUTER_KEY="tu_key"
-#   export GEMINI_API_KEY="tu_key"
-
-OPENROUTER_KEY  = "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"
-genai.configure(api_key="AIzaSyDxmXZKcyq2728x_-H903XbFRtIP2opGAY")
 
 
-# =========================================================
-# CONSTANTES
-# =========================================================
+OPENROUTER_KEY  = "API KEY"
+genai.configure(api_key="API KEY")
+
+
 PATOLOGIAS_VALIDAS = [
     "VIH", "Tuberculosis pulmonar", "Tuberculosis ganglionar",
     "Meningitis bacteriana", "Endocarditis",
@@ -52,9 +35,7 @@ PATOLOGIAS_VALIDAS = [
 ]
 
 
-# =========================================================
-# HELPERS LLM
-# =========================================================
+
 def call_model_openrouter(prompt: str) -> str:
     url = "https://openrouter.ai/api/v1/chat/completions"
 
@@ -129,7 +110,7 @@ def elegir_3_random(indices_3):
     Elige 3 al azar entre los índices elegidos por el modelo.
     Manejo defensivo por si vienen menos de 3.
     """
-    uniq = list(dict.fromkeys(indices_3))  # conserva orden, saca duplicados
+    uniq = list(dict.fromkeys(indices_3))  
     if len(uniq) <= 3:
         return uniq
     return random.sample(uniq, 3)
@@ -144,7 +125,7 @@ def generar_fewshot(indices_3, patologia, casos):
     ]
 
     for idx in indices_3:
-        # tus índices asumen base 1
+       
         if 1 <= idx <= len(casos):
             texto = casos[idx - 1]
             salida.append(f"### CASO {idx}\n{texto}\n")
@@ -152,9 +133,6 @@ def generar_fewshot(indices_3, patologia, casos):
     return "\n".join(salida)
 
 
-# =========================================================
-# PDF EXPORT
-# =========================================================
 def text_to_pdf_bytes(
     text: str,
     paper: str = "A4",
@@ -208,10 +186,6 @@ def text_to_pdf_bytes(
     doc.close()
     return pdf_bytes
 
-
-# =========================================================
-# STREAMLIT UI
-# =========================================================
 st.title("Generador de Historia Clínica Sintética – Infectología")
 
 modo = st.radio(
@@ -252,14 +226,11 @@ else:
     st.write("(Modo totalmente libre: no se ingresa edad, sexo ni motivo.)")
 
 
-# =========================================================
-# BOTÓN PRINCIPAL
-# =========================================================
 if st.button("Generar historia clínica"):
 
     with st.spinner("Generando..."):
 
-        # 1) Determinar patología final
+
         if modo.startswith("Manual"):
             patologia_final = (patologia_usuario or "").strip()
             if not patologia_final:
@@ -270,14 +241,14 @@ if st.button("Generar historia clínica"):
         else:
             patologia_final = random.choice(PATOLOGIAS_VALIDAS)
 
-        # 2) Selección automática de casos (GPT-OSS-20B)
+
         indices6 = seleccionar_6_casos(patologia_final, CASOS)
         indices3 = elegir_3_random(indices6)
 
-        # 3) Construir FEW-SHOT
+
         few_shot = generar_fewshot(indices3, patologia_final, CASOS)
 
-        # 4) PROMPT COMPLETO PARA GEMINI
+
         system_prompt = """
 Sos un médico infectólogo uruguayo que trabaja en un hospital público (Maciel, Clínicas, Pasteur o INOT).
 Redactás historias clínicas sintéticas indistinguibles del corpus real uruguayo (PDF + JSON).
@@ -365,7 +336,7 @@ imitando el registro clínico hospitalario (telegráfico, abreviado, con jerga l
 ### Restricciones clínicas
 1. Solo se permiten casos **de Infectología**.
    Si la patología o motivo **no pertenece a Infectología**, devolvé exactamente:
-   "❌ Error: el modelo está diseñado solo para historias clínicas de Infectología."
+   "Error: el modelo está diseñado solo para historias clínicas de Infectología."
 2. El caso debe ser **coherente**, sin contradicciones.
 3. Si el cuadro incluye patologías no infecciosas (fractura, migraña, hipotiroidismo, etc.), devolvé el mismo mensaje de error.
 
@@ -380,7 +351,7 @@ imitando el registro clínico hospitalario (telegráfico, abreviado, con jerga l
             f"{base_prompt}"
         )
 
-        # 5) Llamada a Gemini
+  
         model = genai.GenerativeModel("models/gemini-2.5-flash")
 
         response = model.generate_content(
@@ -394,13 +365,9 @@ imitando el registro clínico hospitalario (telegráfico, abreviado, con jerga l
 
         historia = (response.text or "").strip()
 
-        # UI resultados
         st.text_area("Historia clínica generada:", historia, height=420)
         st.text_area("Few shots tenidos en cuenta:", few_shot, height=420)
 
-        # =========================================================
-        # DESCARGA PDF
-        # =========================================================
         if historia:
             pdf_bytes = text_to_pdf_bytes(historia)
 

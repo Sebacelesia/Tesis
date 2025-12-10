@@ -6,8 +6,8 @@ import streamlit as st
 import sys
 from pathlib import Path
 
-# Agrega /src al path para que encuentre utils, llm, services
-SRC_PATH = Path(__file__).resolve().parents[1]  # home.py -> app -> src
+
+SRC_PATH = Path(__file__).resolve().parents[1] 
 if str(SRC_PATH) not in sys.path:
     sys.path.insert(0, str(SRC_PATH))
 

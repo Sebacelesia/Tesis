@@ -1,8 +1,6 @@
 import re
 
-# =========================
-# CONFIGURACIONES DE MODELOS
-# =========================
+
 
 MODEL_CONFIGS = {
     "Qwen 8B (Ollama)": {
@@ -33,9 +31,7 @@ MODEL_CONFIGS = {
 
 OLLAMA_ENDPOINT = "http://localhost:11434"
 
-# =========================
-# DEFAULTS ACTIVOS
-# =========================
+
 
 _DEFAULT_CFG = MODEL_CONFIGS["Qwen 8B (Ollama)"]
 
@@ -51,10 +47,7 @@ REPEAT_LAST_N      = _DEFAULT_CFG["repeat_last_n"]
 PRESENCE_PENALTY   = _DEFAULT_CFG["presence_penalty"]
 USE_THINK_TRUNC    = _DEFAULT_CFG["use_think_trunc"]
 
-# =========================
-# PIPELINE PARAMS GENERALES
-# (los tuyos, intactos)
-# =========================
+
 
 USE_CHUNKING        = True
 MAX_CHARS_PER_CHUNK = 15000
@@ -63,17 +56,12 @@ OVERLAP             = 0
 SECTIONS_PER_BLOCK  = 1
 DEBUG_PIPELINE      = True
 
-# =========================
-# REGEX
-# =========================
 
 SECTION_HEADER_REGEX = re.compile(
     r"(?m)^---\s*Secci[oó]n\s+(\d+)\s*---\s*$"
 )
 
-# =========================
-# SETTER DE MODELO ACTIVO
-# =========================
+
 
 def set_active_model(model_label: str) -> dict:
     """
