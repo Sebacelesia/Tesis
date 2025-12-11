@@ -1,16 +1,16 @@
-# 🏥 Sistema de Anonimización y Generación Sintética de Historias Clínicas
+# Sistema de Anonimización y Generación Sintética de Historias Clínicas
 
-Proyecto de tesis que combina dos herramientas complementarias para el procesamiento de historias clínicas de infectología utilizando modelos de lenguaje grandes (LLMs):
+Proyecto de tesis que combina dos herramientas complementarias para el procesamiento de historias clínicas de infectología utilizando modelos de lenguaje grandes (LLMs y SLMs):
 
-1. **🔒 Anonimizador**: Censura información sensible de historias clínicas en PDF
-2. **🧬 Generador Sintético**: Crea historias clínicas sintéticas realistas para investigación y entrenamiento
+1. ** Anonimizador**: Censura información sensible de historias clínicas en PDF
+2. ** Generador Sintético**: Crea historias clínicas sintéticas realistas para investigación y entrenamiento
 
 > [!IMPORTANT]
 > Ambas herramientas están diseñadas específicamente para **historias clínicas de infectología** del sistema de salud uruguayo, imitando el estilo telegráfico y las abreviaciones locales del corpus hospitalario real.
 
-## 📋 Tabla de Contenidos
+##  Tabla de Contenidos
 
-- [Características](#-características)
+
 - [Arquitectura](#-arquitectura-del-proyecto)
 - [Instalación](#-instalación)
 - [Uso](#-uso)
@@ -21,31 +21,9 @@ Proyecto de tesis que combina dos herramientas complementarias para el procesami
 
 ---
 
-## ✨ Características
 
-### 🔒 Anonimizador de Historias Clínicas
 
-- **Extracción inteligente de datos identificatorios**: detecta nombre, documento y dirección del paciente desde el encabezado
-- **Censura completa**: oculta datos personales en todo el documento
-- **Anonimización de profesionales**: censura nombres de médicos y personal sanitario en secciones como "Responsables del registro"
-- **Procesamiento de carga viral**: detecta menciones de valores virales y los redondea según reglas predefinidas para mantener privacidad
-- **Filtrado por fechas**: selecciona evoluciones dentro de rangos temporales específicos
-- **Pipeline configurable**: procesa documentos por bloques con callbacks de progreso
-- **Generación PDF**: exporta la historia anonimizada en formato PDF listo para compartir
-
-### 🧬 Generador de Historias Sintéticas
-
-- **Three modos de generación**:
-  - **Manual**: control total sobre edad, sexo, patología y motivo de consulta
-  - **Patología y motivo libres**: el modelo decide edad/sexo pero respeta patología de infectología
-  - **Totalmente libre**: generación completamente automática
-- **Few-shot learning**: utiliza casos reales similares para mejorar la autenticidad
-- **Selección semántica de casos (OSS)**: usa OpenRouter para elegir los 8 casos más similares clínicamente
-- **Estilo auténtico**: reproduce el registro telegráfico, abreviaciones y "imperfecciones" del corpus uruguayo real
-- **Validación clínica**: solo genera casos de infectología, rechaza patologías fuera del ámbito
-- **Exportación dual**: descarga tanto la historia generada como los few-shots utilizados en PDF
-
-### 🤖 Soporte Multi-Modelo
+###  Soporte Multi-Modelo
 
 - **Ollama** (local): Qwen 2.5 (3B, 7B) para máxima privacidad
 - **Google Gemini** (API): para generación sintética de alta calidad
@@ -53,7 +31,7 @@ Proyecto de tesis que combina dos herramientas complementarias para el procesami
 
 ---
 
-## 🏗️ Arquitectura del Proyecto
+##  Arquitectura del Proyecto
 
 ```
 Tesis/
@@ -91,7 +69,7 @@ Tesis/
 └── README.md
 ```
 
-### 📊 Pipeline de Anonimización
+###  Pipeline de Anonimización
 
 ```mermaid
 graph TD
@@ -111,7 +89,7 @@ graph TD
     M --> N[PDF Anonimizado Final]
 ```
 
-### 🧬 Pipeline de Generación Sintética
+###  Pipeline de Generación Sintética
 
 ```mermaid
 graph TD
@@ -129,13 +107,13 @@ graph TD
 
 ---
 
-## 🚀 Instalación
+##  Instalación
 
 ### Requisitos Previos
 
 - **Python 3.9** (recomendado)
 - **Ollama** (opcional): para usar modelos locales - [ollama.ai](https://ollama.ai)
-- **API Keys** (opcional):
+- **API Keys**:
   - **Google Gemini**: para generación sintética - [AI Studio](https://makersuite.google.com/app/apikey)
   - **OpenRouter**: para selección semántica de casos - [openrouter.ai](https://openrouter.ai)
 
@@ -176,7 +154,7 @@ pip install -r requirements.txt
 
 #### 4. Configurar modelos de lenguaje
 
-##### Opción A: Ollama (local, recomendado para anonimización)
+##### Ollama (local, recomendado para anonimización)
 
 1. Instalar Ollama desde [ollama.ai](https://ollama.ai)
 
@@ -198,40 +176,6 @@ ollama list
 ```bash
 ollama serve
 ```
-
-##### Opción B: Google Gemini (API, para generación sintética)
-
-1. Obtener API key desde [Google AI Studio](https://makersuite.google.com/app/apikey)
-
-2. Configurar en el archivo `src/app/pages/Historias_sintéticas.py`:
-
-```python
-GEMINI_API_KEY = "tu-api-key-aqui"
-```
-
-O configurar como variable de entorno:
-
-**Windows:**
-```bash
-set GEMINI_API_KEY=tu-api-key-aqui
-```
-
-**Linux/macOS:**
-```bash
-export GEMINI_API_KEY=tu-api-key-aqui
-```
-
-##### Opción C: OpenRouter (API, para selección semántica de casos)
-
-1. Obtener API key desde [OpenRouter](https://openrouter.ai)
-
-2. Configurar en el archivo `src/app/pages/Historias_sintéticas.py`:
-
-```python
-OPENROUTER_KEY = "tu-api-key-aqui"
-```
-
----
 
 ## 📖 Uso
 
@@ -276,31 +220,9 @@ La aplicación se abrirá en `http://localhost:8501`.
 
 6. **Descargar PDF anonimizado**:
    - Click en "Descargar PDF anonimizado"
-   - El archivo estará listo para compartir sin datos sensibles
+   - El archivo estará listo
 
-#### Ejemplo de uso
 
-```
-Historia original:
--------------------
-Paciente: Juan Pérez
-DNI: 1.234.567-8
-Dirección: Av. Italia 2020
-
-EA: Consulta por tos productiva. CV detectada: 1.234.567 copias/ml.
-Responsables: Dr. García y Dra. Rodríguez
-
-Historia anonimizada:
----------------------
-Paciente: [CENSURADO]
-DNI: [CENSURADO]
-Dirección: [CENSURADO]
-
-EA: Consulta por tos productiva. CV detectada: >100.000 copias/ml.
-Responsables: [Profesional 1] y [Profesional 2]
-```
-
----
 
 ### 2. Generador de Historias Sintéticas
 
@@ -317,7 +239,7 @@ La aplicación se abrirá en `http://localhost:8501`.
 
 #### Modos de generación
 
-##### 🎯 Modo 1: Manual (Control Total)
+##### Modo 1: Manual (Control Total)
 
 Ideal para generar casos específicos con parámetros exactos.
 
@@ -342,29 +264,18 @@ Ideal para generar casos específicos con parámetros exactos.
 - Infección de sitio quirúrgico
 - Sepsis de origen desconocido
 
-**Ejemplo**:
-```
-Edad: 45
-Sexo: Masculino
-Patología: Tuberculosis pulmonar
-Motivo: Venezolano, radicado en Uruguay. Vive con pareja. 
-        Consulta por tos productiva de 3 semanas.
-```
 
-##### 🧩 Modo 2: Patología y Motivo Libres
+
+#####  Modo 2: Patología y Motivo Libres
 
 El modelo decide edad y sexo, pero respeta el contexto que proveas.
 
 **Parámetros**:
 - Motivo: descripción de la situación clínica
 
-**Ejemplo**:
-```
-Motivo: Paciente brasileño, consulta por fiebre y cefalea intensa 
-        luego de viaje a zona endémica de dengue.
-```
 
-##### 🎲 Modo 3: Totalmente Libre
+
+#####  Modo 3: Totalmente Libre
 
 El modelo genera un caso completo de infectología de forma autónoma.
 
@@ -400,27 +311,6 @@ La aplicación mostrará:
    - Descargar HISTORIA final en PDF
    - Descargar FEW-SHOT en PDF
 
-#### Ejemplo de salida
-
-```
-SM 52 años
-AI: Niega
-AQ: Niega
-AEA: Niega
-
-EA: Hace 15 días comienza con tos seca, progresivamente productiva, 
-blanquecina. Asocia sudoración nocturna, astenia y pérdida ponderal 
-no cuantificada. Sin hemoptisis. Consulta por persistencia sintomática.
-
-EF:
-TA: 110/70 FC: 88 FR: 18 T: 37.8 SatO2: 94% aa
-Regular estado general. Consciente, orientado.
-CP: MP simétrico. Estertores en base derecha.
-CardioVasc: RR2T sin soplos
-Abdomen: Blando, depresible, indoloro
-```
-
----
 
 ## 🔧 Configuración
 
@@ -476,10 +366,6 @@ Editar `data_partesintetica/casos.json` para:
 
 ---
 
-## 🛡️ Privacidad y Seguridad
-
-> [!CAUTION]
-> Este sistema procesa datos médicos altamente sensibles protegidos por leyes de privacidad (HIPAA, GDPR, Ley 18.331 de Uruguay).
 
 ### Recomendaciones de seguridad
 
@@ -509,21 +395,10 @@ Editar `data_partesintetica/casos.json` para:
 
 2. **API Keys**:
    - No compartir tus claves de Gemini/OpenRouter
-   - Agregar `src/app/pages/Historias_sintéticas.py` al `.gitignore` si pusiste keys hardcodeadas
-   - Mejor práctica: usar variables de entorno
+   - Usar variables de entorno
 
-3. **Corpus de casos**:
-   - `casos.json` puede contener datos reales anonimizados
-   - No compartir públicamente sin verificar que esté totalmente anonimizado
-   - Revisar permisos de uso según IRB/comité de ética
 
-### Limitaciones
 
-> [!WARNING]
-> - **Falsos negativos**: El sistema puede no detectar todos los datos sensibles, especialmente en formatos no estándar
-> - **Contexto clínico**: Algunos datos pueden ser re-identificables por contexto (combinación de edad + patología rara + hospital)
-> - **Abreviaciones locales**: El modelo puede no reconocer todas las abreviaciones específicas del hospital
-> - **Datos en imágenes**: Si el PDF contiene escaneos de texto, no serán anonimizados
 
 ---
 
@@ -536,36 +411,9 @@ pymupdf>=1.23.0          # Procesamiento y generación de PDFs
 google-generativeai      # Cliente de Google Gemini
 ```
 
-### Instalación de dependencias adicionales
-
-Para desarrollo:
-
-```bash
-pip install pytest black flake8
-```
 
 ---
 
-## 🧪 Testing
-
-> [!TIP]
-> Antes de usar en producción, probar con historias clínicas sintéticas o ficticias.
-
-### Test de anonimización
-
-1. Generar una historia sintética usando el generador
-2. Descargar el PDF generado
-3. Subirlo al anonimizador
-4. Verificar que los datos ficticios sean correctamente censurados
-
-### Test de generación
-
-1. Probar los 3 modos de generación
-2. Verificar que las patologías se respeten
-3. Revisar el estilo telegráfico y abreviaciones
-4. Validar coherencia clínica con un médico infectólogo
-
----
 
 
 
