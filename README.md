@@ -167,7 +167,7 @@ ollama list
 ollama serve
 ```
 
-## 📖 Uso
+##  Uso
 
 ### 1. Anonimizador de Historias Clínicas
 
