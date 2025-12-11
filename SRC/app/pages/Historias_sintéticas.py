@@ -13,22 +13,15 @@ if str(SRC_PATH) not in sys.path:
 
 
 
-# =========================================================
-# API KEYS DIRECTO EN CODIGO
-# =========================================================
+
 OPENROUTER_KEY = "API KEY"
 GEMINI_API_KEY = "API KEY"
 
 
-# =========================================================
-# DATA
-# =========================================================
+
 CASOS = load_casos()
 
 
-# =========================================================
-# UI
-# =========================================================
 st.title("Generador de Historia Clinica Sintetica – Infectologia")
 
 modo = st.radio(
@@ -69,9 +62,6 @@ else:
     st.write("(Modo totalmente libre: no se ingresa edad, sexo ni motivo.)")
 
 
-# =========================================================
-# ACCION
-# =========================================================
 if st.button("Generar historia clinica"):
 
     # Validacion simple antes de llamar APIs
@@ -95,7 +85,7 @@ if st.button("Generar historia clinica"):
                 gemini_key=GEMINI_API_KEY,
             )
 
-            # Persistir resultados para que queden visibles y descargables
+            
             st.session_state["historia_generada"] = historia
             st.session_state["few_shot_generado"] = few_shot
             st.session_state["patologia_final"] = patologia_final
@@ -121,7 +111,7 @@ if st.button("Generar historia clinica"):
             st.stop()
 
         except ValueError as e:
-            # Por ejemplo: modo Manual sin patologia
+      
             st.info(str(e))
             st.stop()
 
@@ -133,9 +123,7 @@ if st.button("Generar historia clinica"):
             st.stop()
 
 
-# =========================================================
-# RESULTADOS (persistentes)
-# =========================================================
+
 historia_ss = st.session_state.get("historia_generada", "")
 fewshot_ss = st.session_state.get("few_shot_generado", "")
 pat_ss = st.session_state.get("patologia_final", "infectologia")
