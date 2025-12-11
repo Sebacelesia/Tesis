@@ -302,7 +302,7 @@ La aplicación mostrará:
    - Descargar FEW-SHOT en PDF
 
 
-## 🔧 Configuración
+##  Configuración
 
 ### Modelos disponibles
 
@@ -392,7 +392,7 @@ Editar `data_partesintetica/casos.json` para:
 
 ---
 
-## 📦 Dependencias Principales
+##  Dependencias Principales
 
 ```txt
 streamlit>=1.37.0        # Framework de interfaz web
