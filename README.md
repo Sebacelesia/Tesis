@@ -8,16 +8,6 @@ Proyecto de tesis que combina dos herramientas complementarias para el procesami
 > [!IMPORTANT]
 > Ambas herramientas están diseñadas específicamente para **historias clínicas de infectología** del sistema de salud uruguayo, imitando el estilo telegráfico y las abreviaciones locales del corpus hospitalario real.
 
-##  Tabla de Contenidos
-
-
-- [Arquitectura](#-arquitectura-del-proyecto)
-- [Instalación](#-instalación)
-- [Uso](#-uso)
-  - [Anonimizador de Historias Clínicas](#1-anonimizador-de-historias-clínicas)
-  - [Generador de Historias Sintéticas](#2-generador-de-historias-sintéticas)
-- [Configuración](#-configuración)
-- [Privacidad y Seguridad](#-privacidad-y-seguridad)
 
 ---
 
